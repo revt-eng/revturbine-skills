@@ -32,7 +32,7 @@ import { useMemo } from 'react';
 import playbook from './revturbine.playbook.json';
 
 const options = useMemo(() => ({
-  localRuntime: { exportedConfig: playbook },
+  localRuntime: { playbook },
   user: {
     id: currentUser.id,
     context: { plan_handle: currentUser.planHandle ?? 'free' },
@@ -43,9 +43,10 @@ const options = useMemo(() => ({
 }), []);
 ```
 
-`localRuntime.exportedConfig` is the whole switch — its presence puts the SDK in
+`localRuntime.playbook` is the whole switch — its presence puts the SDK in
 `local_only` mode. No `tenantId`, `apiKey`, or `endpoint` is needed yet; those
-come at go-live.
+come at go-live. *(An older `localRuntime.exportedConfig` key still works as a
+deprecated alias, but `playbook` is the canonical one — use it.)*
 
 Adjust the import path to wherever the scaffold wrote the file (repo root by
 default).
