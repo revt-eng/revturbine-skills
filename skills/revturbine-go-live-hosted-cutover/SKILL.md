@@ -59,7 +59,7 @@ The component code does **not** change — only the provider options. Replace
 
 ```diff
   const options = useMemo(() => ({
--   localRuntime: { exportedConfig: playbook },
+-   localRuntime: { playbook },
 +   tenantId: process.env.REVTURBINE_TENANT_ID!,
 +   apiKey: process.env.REVTURBINE_API_KEY!,
 +   runtimeMode: 'revturbine_server',
