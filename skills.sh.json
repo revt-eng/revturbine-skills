@@ -1,0 +1,30 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "notGrouped": "bottom",
+  "groupings": [
+    {
+      "title": "Get started",
+      "description": "The first RevTurbine session — from an empty app to one paid action gated locally, with a path to going live.",
+      "skills": [
+        "revturbine-start-here",
+        "revturbine-integration-best-practices"
+      ]
+    },
+    {
+      "title": "Wire the SDK",
+      "description": "Install RevTurbine, mount the provider, load the local Playbook, and gate a paid action.",
+      "skills": [
+        "revturbine-install-sdk-and-provider",
+        "revturbine-run-local-playbook",
+        "revturbine-add-gate"
+      ]
+    },
+    {
+      "title": "Go live",
+      "description": "Graduate the local trial to the hosted control plane.",
+      "skills": [
+        "revturbine-go-live-hosted-cutover"
+      ]
+    }
+  ]
+}
