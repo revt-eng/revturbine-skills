@@ -4,26 +4,34 @@
   "groupings": [
     {
       "title": "Get started",
-      "description": "The first RevTurbine session — from an empty app to one paid action gated locally, with a path to going live.",
+      "description": "The front door — sequences the whole first session and hands each step to its skill.",
       "skills": [
-        "revturbine-start-here",
-        "revturbine-integration-best-practices"
+        "revturbine-start-here"
       ]
     },
     {
-      "title": "Wire the SDK",
-      "description": "Install RevTurbine, mount the provider, load the local Playbook, and gate a paid action.",
+      "title": "Integrate",
+      "description": "Install the SDK, load the local Playbook, and wire the monetization surfaces into the app.",
       "skills": [
-        "revturbine-install-sdk-and-provider",
-        "revturbine-run-local-playbook",
-        "revturbine-add-gate"
+        "revturbine-integrate-sdk",
+        "revturbine-wire-monetization-surfaces",
+        "revturbine-verify-integration"
+      ]
+    },
+    {
+      "title": "Design the monetization",
+      "description": "Author the Playbook — plans, entitlements, trials, placements — with RevTurbine's packaging and pricing judgement behind it.",
+      "skills": [
+        "revturbine-author-playbook",
+        "revturbine-monetization-best-practices"
       ]
     },
     {
       "title": "Go live",
-      "description": "Graduate the local trial to the hosted control plane.",
+      "description": "Connect Stripe, connect the tenant, and launch to real users.",
       "skills": [
-        "revturbine-go-live-hosted-cutover"
+        "revturbine-connect-billing",
+        "revturbine-release-lifecycle"
       ]
     }
   ]
