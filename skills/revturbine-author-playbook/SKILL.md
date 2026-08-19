@@ -16,7 +16,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.14.1"
+  version: "0.14.2"
   safety_class: writes-config-draft
   schema_version: ">=0.1.0 <0.2.0"
   sdk: "^0.2.77"
@@ -193,6 +193,6 @@ If the config looks right but the app behaves wrong,
 ## If you get stuck
 
 Shape and syntax questions are answered by `revturbine schema` and
-`revturbine <cmd> --help`; the docs (`https://revturbine.com/docs/llms.txt` is
-the contents map) cover concepts. Otherwise follow `revturbine-start-here` →
+`revturbine <cmd> --help`; the docs cover concepts
+(`https://revturbine.com/docs/llms-small.txt` is the page map). Otherwise follow `revturbine-start-here` →
 If you get stuck.

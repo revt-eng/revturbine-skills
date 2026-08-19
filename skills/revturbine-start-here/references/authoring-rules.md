@@ -63,8 +63,7 @@ RevTurbine's internal demo-building practice.*
     convergent, so an entity missing from your file is a real deletion. A guard blocks
     emptying or mass-deleting a populated type; `--prune` confirms a deletion
     deliberately, `--no-prune` imports additively. Read the diff by which entities appear
-    on each side, not by trusting the labels — the CLI's file-vs-`--live` direction is
-    currently inverted (ledger F-22).
+    on each side, not by trusting the labels.
 14. **Handles are a published contract.** Once app code, tests, or a live Release
     reference a handle, renaming it is a breaking change, not a tidy-up: the old handle
     stops resolving and gates fail closed. Add the new object and migrate call sites

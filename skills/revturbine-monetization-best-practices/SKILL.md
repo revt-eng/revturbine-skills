@@ -18,7 +18,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.7.0"
+  version: "0.7.1"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
   sdk: "^0.2.77"
@@ -444,6 +444,6 @@ without evidence is worse than no answer.
 The model and its semantics are in
 `revturbine-start-here/references/monetization-model.md`; shape and
 field questions are answered by `revturbine schema`; the concepts are
-covered in the docs (`https://revturbine.com/docs/llms.txt` is the
-contents map). Otherwise follow `revturbine-start-here` → If you get
+covered in the docs
+(`https://revturbine.com/docs/llms-small.txt` is the page map). Otherwise follow `revturbine-start-here` → If you get
 stuck.

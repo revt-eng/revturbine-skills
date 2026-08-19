@@ -17,7 +17,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.7.0"
+  version: "0.7.1"
   safety_class: writes-app-code
   schema_version: ">=0.1.0 <0.2.0"
   sdk: "^0.2.77"
@@ -136,12 +136,16 @@ entitled. Unlike `<Gate>`, the function form renders nothing on denial —
 when it reports `ran: false`, render the gate placement for that
 entitlement yourself.
 
-**The trap in the screen half:** a user who is running low comes back
-`limited`, and **limited is still allowed** — the children render.
-Omitting `limitedFallback` is the safe default. If you supply one, it
+**The `limited` state, precisely.** `limited` does not mean "running
+low" — it appears only **at or past the cap**, on a limit rule whose
+`enforcement` is `degrade` (then it is *allowed*: the children render,
+degraded) or unset (then it *denies*, exactly like `hard_block`). Below
+the cap a user is plain `allowed`, whatever the percentage. So branch on
+`allowed`, never on `status` — `useCan()` exposes it as `can` — and check
+every gate in the app agrees. If you supply `limitedFallback`, it
 replaces the children rather than sitting beside them, so it must
-re-render the feature as well as the warning — a warning alone locks out
-a user who is paying you. Check every gate in the app agrees on this.
+re-render the feature as well as the warning; a warning alone locks out
+a paying user. Omitting it is the safe default.
 
 **The backend half** protects the value. Anything a user can gain by
 editing browser state — an export that costs compute, a credit spend, a
@@ -232,6 +236,14 @@ fresh:
   plan change, a trait.
 - **Re-send before any screen that depends on a fact that can change
   elsewhere** — another device, a server job, a billing webhook.
+- **Mounted gates do not re-evaluate on their own.** `update()` changes
+  what the SDK decides, but a `<Gate>` already on screen keeps its last
+  answer until it remounts. So supply the current balances in the
+  provider's initial user context on any screen that gates on them, and
+  where a balance changes while that screen is open, drive the re-check
+  from the app — `useEntitlement().recheck()`, or remount the gated
+  subtree with a key. Verify with the just-over-limit test below rather
+  than assuming.
 
 A stale or mis-keyed context misleads the user but never over-grants:
 display reads the client context; enforcement reads the app's own

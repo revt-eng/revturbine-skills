@@ -19,7 +19,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.8.1"
+  version: "0.8.2"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
   sdk: "^0.2.77"
@@ -110,8 +110,8 @@ self-contained. Report per group even when clean.
    both directions — a name in the code that the Playbook lacks, and a
    name in the Playbook that the code never renders. Trait keys the
    segments target against the traits the app sets. Gating on the right
-   state: a `limited` user is still entitled, and gates must agree with
-   each other about that. Copy rendering with its personalization tokens
+   state: gates must branch on `allowed`, not on `status`, and must
+   agree with each other. Copy rendering with its personalization tokens
    resolved, not as literal `{{…}}`.
 3. **Authored behavior that never runs.** Caps, cooldowns and trial
    triggers enable themselves from what the Playbook authors (the
@@ -359,15 +359,16 @@ so the segment is empty and everything targeted at it goes dark. Diff
 `getTargeting().configuredTraitFields` against
 `Object.keys(getTargeting().traits)` — both halves are right there.
 
-**The `limited` state.** An entitlement can come back `limited` — access
-is still granted, the balance is merely running low. Code that blocks on
-`!allowed` locks out paying users who are entitled; the correct test is
-the combined one (`useCan()` exposes it as `can`). Check every gate in
-the app agrees about this, since a mix of `!allowed` and `!can` across
-call sites means the same user is admitted in one place and refused in
-another. Ask your human whether a user near their limit should be warned
-or blocked, and record which one the code should say — the change routes
-to `revturbine-wire-monetization-surfaces`.
+**The `limited` state.** `limited` means at or past the cap, not
+approaching it, and it can be granted or denied depending on the rule's
+`enforcement`: `degrade` gives `limited` + allowed (the feature runs,
+degraded), unset enforcement gives `limited` + **denied**. Code that
+branches on `status === 'limited'` therefore admits and refuses the same
+user depending on how the rule was authored; the reliable test
+everywhere is `allowed` (`useCan()` exposes it as `can`). Check every
+gate agrees. Whether a user at the limit should be degraded rather than
+blocked is an authoring choice — ask your human, and route the change to
+`revturbine-author-playbook`.
 
 **Personalization tokens.** Placement copy can carry tokens that resolve
 from plan, usage, or trial state. A token the runtime cannot derive

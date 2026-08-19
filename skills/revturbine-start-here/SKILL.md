@@ -13,7 +13,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.39.0"
+  version: "0.39.1"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
   sdk: "^0.2.77"
@@ -181,10 +181,12 @@ document with no per-entity filter, so pull it once and work from that copy.
 
 ## Docs
 
-If you can fetch URLs, load **`https://revturbine.com/docs/llms.txt`** into
-context now — it's the contents map of revturbine.com/docs (concepts, API
-reference, tutorials, a component gallery, and a playground); use it to pull
-the specific page you need when you want depth. If you can't fetch, no
+If you can fetch URLs, load **`https://revturbine.com/docs/llms-small.txt`**
+into context now — the abridged map of revturbine.com/docs (concepts, API
+reference, tutorials, components); use it to pull the specific page you need
+when you want depth. Its internal links are written site-relative and some
+omit the `/docs` prefix — if one 404s, retry it under
+`https://revturbine.com/docs/…`. If you can't fetch, no
 problem — these skills carry the standard flow.
 
 ## Ground rules
