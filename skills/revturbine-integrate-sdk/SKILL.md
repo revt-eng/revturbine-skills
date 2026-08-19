@@ -17,7 +17,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.7.1"
+  version: "0.7.2"
   safety_class: writes-app-code
   schema_version: ">=0.1.0 <0.2.0"
   sdk: "^0.2.77"
@@ -211,10 +211,15 @@ user: {
 }
 ```
 
-**Put the plan in `plan`.** It takes the plan's **handle** — the short,
-stable name the Playbook knows that plan by — and its display name. Both
-are required. A plan supplied under some other key is not read, and every
-entitlement check then denies.
+**Put the plan in `plan`, as `{ id, name }`.** `id` is the plan's
+**handle** — the short, stable name the Playbook knows that plan by —
+and `name` is its display name. Both are required, and the key names
+matter: a bare string (`plan: 'pro'`), `{ handle }`, or any other key is
+**not read — and the checks then GRANT, not deny.** Plan-targeted rules
+stop filtering when no plan binds, so a mis-keyed or missing plan hands
+every user the paid feature, silently and with no warning. Verify by
+checking a paid-only entitlement as a free user and confirming a
+**denial** — an `allowed: true` there means the plan never bound.
 
 **If the app has no plans yet, that is normal** — it is often why
 RevTurbine is being added. Set the plan to the example Playbook's `free`
@@ -223,10 +228,13 @@ plan and carry on. Wiring real plans arrives with billing
 
 Then the rules for the id, which the SDK does not enforce for you:
 
-- **The app always supplies the id.** RevTurbine decides for identified
-  users only — there is no anonymous mode to fall back on. Supporting
-  visitors who are not signed in is on the roadmap, not shipped, so keep
-  RevTurbine off pre-signup surfaces for now.
+- **The app always supplies the id — the SDK will not stop you.** An
+  empty id, or no user at all, mints a **fresh random anonymous UUID on
+  every init**, with no warning, and checks evaluate normally against it.
+  That breaks caps, usage attribution and analytics identity in a way
+  nothing surfaces. (`identify('')` is refused; init is not.) Supporting
+  signed-out visitors is on the roadmap, not shipped, so keep RevTurbine
+  off pre-signup surfaces and resolve the user before mounting.
 - **Stable, non-guessable, and never an email address.** An email in the id
   puts personal data into every decision.
 - **The same id on the browser and the backend.** A backend keyed by

@@ -15,7 +15,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.4.0"
+  version: "0.4.1"
   safety_class: writes-config-draft
   schema_version: ">=0.1.0 <0.2.0"
   sdk: "^0.2.77"
@@ -136,7 +136,10 @@ improvise Stripe mechanics from memory.
    path.
 3. Confirm the user's access flips with no app code: a gated feature
    reads denied before the purchase and allowed after — the plan
-   arrived from billing, not from the app.
+   arrived from billing, not from the app. **Re-mount or reload the
+   screen before reading the second result**: a gate already on screen
+   holds its previous answer, so testing without a reload shows a stale
+   "still denied" and sends you hunting a billing bug that isn't there.
 4. Fire a payment failure (a declining test card) and confirm the
    payment-attention signal turns on. Recovery clears it on the
    customer record; the SDK's held context does not clear itself
@@ -155,7 +158,7 @@ flip.
 
 One edit, routed through `revturbine-wire-monetization-surfaces` since
 it is app code: **the checkout stub becomes real** — the
-`open_checkout` resolver now opens the app's checkout carrying the
+`open_checkout_modal` resolver now opens the app's checkout carrying the
 mapped plan's real price.
 
 And one deletion: **any hand-written plan update after purchase is now

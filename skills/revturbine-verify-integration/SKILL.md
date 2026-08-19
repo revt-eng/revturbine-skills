@@ -19,7 +19,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.8.2"
+  version: "0.8.3"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
   sdk: "^0.2.77"
@@ -100,7 +100,12 @@ self-contained. Report per group even when clean.
    and emits nothing, and nothing errors.** Usage, credit and seat keys
    the app reports against the handles the rules limit — **a key that
    matches nothing is read as zero consumed, so the limit never bites.**
-   The plan handle in the user context against the Playbook's plans.
+   The plan in the user context against the Playbook's plans — it must
+   be `plan: { id, name }`; **a missing or wrongly-keyed plan makes
+   plan-targeted rules stop filtering, so checks GRANT rather than
+   deny.** Test a paid-only entitlement as a free user and require a
+   denial. Likewise the user id: an empty or absent id mints a random
+   anonymous UUID per init, silently.
    Every revenue-critical action re-checked on the backend before
    value is granted, and a trial's paid cutoff anchored to server time
    rather than the client clock. The same user id space on client and
@@ -236,7 +241,7 @@ source.
 |---|---|
 | `explainPlacementDecision(input)` | The richest one. Per-rule `matchesPlan` / `matchesSegment` / outcome, and per-predicate verdicts for every segment. Use it on any decision that surprises you. |
 | `getTargeting()` | Returns `configuredTraitFields` (trait names the Playbook's segments reference) **and** `traits` (what the app supplies). Diff them — the SDK never does. Also `segmentIds`, `plan`. |
-| `getUsage()` | Resolved usage snapshot. **An entry with no `limit` is an unmapped usage key** — the symptom of the highest-consequence seam. |
+| `getUsage()` | Resolved usage snapshot. **An entry with no `limit` is an unmapped usage key** — the symptom of the highest-consequence seam. Sees only balances sent via `update({ usage })`: an app that passes usage per call (`can(handle, { used })`) shows `{}` here, so read those call sites instead. |
 | `getPolicy()` | `runtimeMode` plus the placement behavior flags. The whole "authored but inert" check in one call. |
 | `getEntitlements()` | Every entitlement result resolved so far, keyed by handle. |
 | `getTelemetryCounters()` | `{ sent, failed, dropped, redacted }`. **A non-zero `failed` is the only visible trace of a rejected ingest key or a blocked origin.** |
@@ -271,7 +276,7 @@ the id); entitlement rules limit against handles. **A balance reported under a k
 handle is not an error — the check reads consumption as zero, so the
 limit never bites.** This is the one place in the SDK where a mistake
 grants access rather than refusing it, and it sits directly on metered
-revenue. Detect it with `getUsage()` — look for an entry carrying no
+revenue. Detect it with `getUsage()` (per-call usage context is invisible to it — see the probe table) — look for an entry carrying no
 `limit` — then evaluate the entitlement just over its limit and confirm a
 denial. If a usage-limited entitlement still allows just over its limit, the
 key is not connecting.

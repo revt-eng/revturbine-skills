@@ -17,7 +17,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.7.1"
+  version: "0.7.2"
   safety_class: writes-app-code
   schema_version: ">=0.1.0 <0.2.0"
   sdk: "^0.2.77"
@@ -71,9 +71,14 @@ missing one is silent:
 | A qualifier (Conversion / Expansion, Retention) | Nothing once billing is connected — qualifiers are conditions RevTurbine derives itself, payment signals included. Before billing connects, set `payment_failed` / `payment_at_risk` on the user context |
 | A segment on activity state | Product events fired where they happen (`rt.track()`) — activity and its tiers derive from tracked events |
 
-Field shapes come from `revturbine schema` (`UserContext`): traits go
-under `custom`, trial state under `trial`, and the payment signals are
-`payment_failed` and `payment_at_risk`. The id and plan rules — and
+User-context field shapes are in the package's own types
+(`RevTurbineUserContext` in the installed `.d.ts`) — **not** in
+`revturbine schema`, which emits the Playbook schema only. Traits go
+under `custom`, trial state under `trial`, the payment signals are
+`payment_failed` and `payment_at_risk`, and usage goes under `usage` as
+plain numbers keyed by handle (`update({ usage: { gen: 25 } })` — a bare
+handle at the top level is dropped without warning, and so is the richer
+entry-object form). The id and plan rules — and
 their traps — are taught in `revturbine-integrate-sdk` → "Set the user
 context". Never improvise a name: `revturbine generate types
 <playbook>` emits the Playbook's handles as typed constants —
@@ -198,19 +203,21 @@ a demo, open another placement. RevTurbine supplies the intent; **the
 app executes it**, through the resolver map the provider was given at
 mount (`uiPathResolvers`, established by `revturbine-integrate-sdk`).
 
-Give every action type the Playbook declares a real body. Coverage is
-enforced for you: the SDK refuses to initialize when a declared type has
-no resolver, and names the missing type in its error — read that rather
-than auditing by hand (`validateUiPathResolvers()` runs the same check
-on demand). Key the map by the exact action-type values in `revturbine
-schema` (`ContentUiPath.action_type`); the authoring-side CTA-path enum
-is a different list with similar names, and keys from it fail the init
-check. For a click that reaches no resolver anyway, the slot's
-`onCtaClick` prop is the last resort.
+Give every action type the Playbook declares a real body. **A gap does
+not fail the build** — init only logs a `console.warn` naming the
+missing type, and the affected CTAs fall through to the slot's
+`onCtaClick` prop, so an unwired button looks handled and does nothing.
+Run the check yourself: `validateUiPathResolvers({ throwOnMissing: true })`
+turns a gap into an error. Key the map by the exact action-type values
+in `ContentUiPath.action_type` — **`open_checkout_modal`,
+`navigate_to_plans`, `open_upgrade_modal`, …** The authoring-side
+CTA-path enum has similar-looking names (`open_checkout`), and the
+engine normalizes those to the `ContentUiPath` values before they reach
+the app: a resolver keyed `open_checkout` **never fires**.
 
 Checkout needs somewhere to send the user. If the app already has its
-own checkout, wire `open_checkout` to it now — the resolver receives the
-plan handle; the app maps it to its own price.
+own checkout, wire **`open_checkout_modal`** to it now — the resolver
+receives the plan handle; the app maps it to its own price.
 `revturbine-connect-billing` does not build checkout: it links
 RevTurbine to Stripe — prices mapped to plan variations, and Stripe's
 events flowing back into RevTurbine. Once billing is connected, a
@@ -245,10 +252,12 @@ fresh:
   subtree with a key. Verify with the just-over-limit test below rather
   than assuming.
 
-A stale or mis-keyed context misleads the user but never over-grants:
-display reads the client context; enforcement reads the app's own
-records through the gate's backend half. **A metered entitlement with no
-reported balance reads as zero used** — the limit never bites, silently.
+**A stale or mis-keyed context over-grants, silently.** A metered
+entitlement with no reported balance reads as zero used, so the limit
+never bites; a plan under the wrong key means plan-targeted rules stop
+filtering and everything reads allowed. Neither warns. The backend
+re-check is what actually protects value — the client context is a
+display hint, and it fails in the generous direction.
 The usual cause is a typo'd key: the balance lands under a name no
 entitlement owns, and the real handle stays at zero. Report against the
 generated typed handles rather than string literals and that typo is a

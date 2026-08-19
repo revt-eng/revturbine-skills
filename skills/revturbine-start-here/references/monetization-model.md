@@ -46,7 +46,7 @@ decides what lever you get. Canonical order:
 |---|---|---|
 | Feature | On or off | The capability is present or absent |
 | Capability Tier | Named levels (Standard, Advanced) | Same feature, different power |
-| Usage Limit | A ceiling per period | Consumption you cap and reset |
+| Usage Limit | A ceiling per period (**the app owns the reset**) | Consumption you cap and reset |
 | Price-per-unit | Charge per unit consumed | Overage beyond an allowance |
 | Rate Limit | Speed rather than volume | Protecting cost or infrastructure |
 | Credits | A balance that can be topped up | Consumption you sell more of |
@@ -80,10 +80,20 @@ count.
 
 ### Enforcement — what happens at the limit
 
-Reaching a limit is not automatically a block. Enforcement is set globally and per rule:
-**hard block**; **soft block** (allow the action, show the upgrade prompt); **degrade**
-(throttle or limit functionality); **allow overage** (charge per unit via the billing
-meter). A **grace period** (hours, on the rule or the global default) delays enforcement
+Reaching a limit is not automatically a block. Enforcement is set globally and per rule, and it is inert below the limit — every mode
+reads `allowed` until `used >= limit`. **At the limit** (verified against the shipped
+engine):
+
+| `enforcement` | result at/past the limit | in effect |
+|---|---|---|
+| `hard_block` | `denied`, `allowed: false` | blocks |
+| `soft_block` | `denied`, `allowed: false` (reason `…_soft_block`) | **also blocks** — the reason string differs, the outcome does not |
+| `degrade` | `limited`, `allowed: true` | lets the action through, flagged — this is the "allow but nudge" mode |
+| `allow_overage` | `allowed`, `allowed: true` (reason `…_overage`) | lets it through, meters the overage |
+| *unset* | `limited`, `allowed: false` | blocks |
+
+Pick `degrade` — not `soft_block` — when the intent is to warn rather than stop. Code
+branches on `allowed`, never on `status`. A **grace period** (hours, on the rule or the global default) delays enforcement
 after the limit is reached.
 
 Enforcement decides access; it shows nothing by itself. The user-facing side is
@@ -283,9 +293,9 @@ RevTurbine decides for a specific user and knows only what the app tells it.
 
 | Field | Required | Authoritative source | Notes |
 |---|---|---|---|
-| User id | Always | App | Stable, non-guessable, always app-supplied — there is no anonymous mode; signed-out users are a roadmap item. Empty ids are rejected; email-shaped ids warn |
+| User id | Always | App | Stable, non-guessable, always app-supplied. **The SDK does not enforce this**: an empty id, or no user at all, mints a fresh random anonymous UUID per init with no warning — so resolve the user before mounting. Signed-out support is a roadmap item. `identify('')` is refused; init is not. Email-shaped ids warn |
 | Plan | Yes, for now | RevTurbine, from billing | The app may also supply it to grant access instantly at upgrade |
-| Usage balances | If an entitlement meters it | Customer counts, RevTurbine persists | Absolute balances, reported by the app |
+| Usage balances | If an entitlement meters it | **The app counts, resets and reports** — `period_scope` describes the intent, it does not roll the counter over; nothing resets it for you | Absolute balances, reported by the app |
 | Credit balances | If an entitlement uses credits | Customer counts, RevTurbine persists | Same model |
 | Trial state | Optional | App today, RevTurbine planned | Countdown displays locally; the cutoff is server-verified |
 | Traits | Optional | App | Whatever custom targeting reads |
