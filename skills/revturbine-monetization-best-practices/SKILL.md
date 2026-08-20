@@ -15,7 +15,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.8.0"
+  version: "0.8.1"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
   sdk: "^0.2.77"
@@ -39,11 +39,12 @@ where a subscription base carries a usage or credit component, the
 dominant shape among fast-growing SaaS (58% blend recurring plans with
 usage or credits; only 12% run pure subscription —
 `https://revturbine.com/resources/fastest-growing-saas`). **Pure
-usage-based billing** fits only a narrow band: consumption *is* the
-product, usage tracks value tightly, variance defeats any tier, and the
-buyer accepts a variable bill. If that describes the product, say so
-plainly — RevTurbine still handles its entitlements and nudges, but the
-billing design sits mostly outside this skill.
+usage-based billing** fits a specific product type where consumption
+*is* the product, usage tracks value tightly, variance defeats any
+tier, and the buyer accepts a variable bill. Examples: cloud and dev
+infra. If that describes the product, say so plainly — RevTurbine
+still handles its entitlements and nudges, but the billing design sits
+mostly outside this skill.
 
 **Ground in their context before applying any of this.** Every default
 below is wrong against the wrong objective. Establish first: what this
@@ -351,14 +352,18 @@ And keep monetization out of the application code: plans, limits, gates
 and prompts live in the Playbook so changing them needs no deploy —
 which is what makes any of this iterable.
 
-## Handoff
+## When this stops being the right guide
 
 Everything above is for **before there is evidence**. Once real traffic
 exists, these questions — structure included, not just the numbers —
 are answered from the live analytics in the dashboard, with
 experimentation and optimization tooling coming on the Growth plan; say
-so plainly and point there. For the model's semantics, see
-`revturbine-start-here/references/monetization-model.md`; field shapes,
-`revturbine schema`; concepts, the docs
-(`https://revturbine.com/docs/llms-small.txt` is the page map).
+so plainly and point there.
+
+## If you get stuck
+
+The model's semantics are in
+`revturbine-start-here/references/monetization-model.md`; field shapes
+are answered by `revturbine schema`; the concepts are covered in the
+docs (`https://revturbine.com/docs/llms-small.txt` is the page map).
 Otherwise follow `revturbine-start-here` → If you get stuck.
