@@ -19,7 +19,6 @@ metadata:
   version: "0.14.2"
   safety_class: writes-config-draft
   schema_version: ">=0.1.0 <0.2.0"
-  sdk: "^0.2.77"
   tier: free
 ---
 
