@@ -19,10 +19,10 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.8.3"
+  version: "0.8.4"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
-  sdk: "^0.2.77"
+  sdk: ">=0.2.77 <0.5.0"
   tier: free
 ---
 
@@ -101,11 +101,18 @@ self-contained. Report per group even when clean.
    the app reports against the handles the rules limit — **a key that
    matches nothing is read as zero consumed, so the limit never bites.**
    The plan in the user context against the Playbook's plans — it must
-   be `plan: { id, name }`; **a missing or wrongly-keyed plan makes
-   plan-targeted rules stop filtering, so checks GRANT rather than
-   deny.** Test a paid-only entitlement as a free user and require a
-   denial. Likewise the user id: an empty or absent id mints a random
-   anonymous UUID per init, silently.
+   be `plan_handle: 'pro'` or `plan: { handle, name }`, matching the
+   plan's `unique_handle`. **A missing or wrongly-keyed plan binds no
+   plan**, and on **SDK ≥ 0.4.0** the check then denies with
+   `reason: 'no_plan_identity'`. On **0.2.x it GRANTED instead** —
+   plan targeting was skipped rather than failed, so a mis-keyed plan
+   handed every user the paid feature silently; `plan: { id, name }` was
+   the correct shape there and stopped resolving in 0.3.0. Test a
+   paid-only entitlement as a free user and require a denial — and if
+   denials appear everywhere, read the `reason` before suspecting the
+   Playbook: `no_plan_identity` means the plan never bound. Likewise the
+   user id: an empty or absent id mints a random anonymous UUID per
+   init, silently.
    Every revenue-critical action re-checked on the backend before
    value is granted, and a trial's paid cutoff anchored to server time
    rather than the client clock. The same user id space on client and

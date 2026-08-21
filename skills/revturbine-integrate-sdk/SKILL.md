@@ -17,10 +17,10 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.7.2"
+  version: "0.8.0"
   safety_class: writes-app-code
   schema_version: ">=0.1.0 <0.2.0"
-  sdk: "^0.2.77"
+  sdk: ">=0.2.77 <0.5.0"
   tier: free
 ---
 
@@ -128,7 +128,7 @@ export function Providers({ children }: { children: ReactNode }) {
     localRuntime: { playbook },
     user: {
       id: user.id,
-      plan: { id: user.planHandle, name: user.planName },
+      plan: { handle: user.planHandle, name: user.planName },
     },
     uiPathResolvers: {},
   }), []);   // built once, deliberately — see below
@@ -207,19 +207,41 @@ it. Two fields matter now: the id, and the plan.
 ```tsx
 user: {
   id: user.id,
-  plan: { id: 'pro', name: 'Pro' },
+  plan_handle: 'pro',
 }
 ```
 
-**Put the plan in `plan`, as `{ id, name }`.** `id` is the plan's
-**handle** — the short, stable name the Playbook knows that plan by —
-and `name` is its display name. Both are required, and the key names
-matter: a bare string (`plan: 'pro'`), `{ handle }`, or any other key is
-**not read — and the checks then GRANT, not deny.** Plan-targeted rules
-stop filtering when no plan binds, so a mis-keyed or missing plan hands
-every user the paid feature, silently and with no warning. Verify by
-checking a paid-only entitlement as a free user and confirming a
-**denial** — an `allowed: true` there means the plan never bound.
+**The plan's identity is its handle.** Supply it flat as `plan_handle`,
+or as `plan: { handle, name }` when you also want the display name:
+
+```tsx
+user: {
+  id: user.id,
+  plan: { handle: 'pro', name: 'Pro' },
+}
+```
+
+The handle is the short, stable name the Playbook knows that plan by —
+its `unique_handle`. The key name matters: a bare string
+(`plan: 'pro'`) or the old `plan: { id }` is **not read**, and a user
+with no bound plan **fails closed** — every plan-targeted rule misses
+and the check denies with `reason: 'no_plan_identity'`.
+
+Verify by checking a paid-only entitlement as a free user and confirming
+a **denial**. If instead you see denials *everywhere*, including on plans
+that should be granted, read the `reason`: `no_plan_identity` means the
+plan never bound, and the usual cause is still passing `plan: { id }`.
+
+> **Version note.** `plan: { id, name }` was correct through SDK 0.2.x
+> and stopped resolving in 0.3.0, when the plan object's identity field
+> was renamed `id` → `handle` (the `id` was a database-internal value the
+> client often did not have — and in practice was usually populated with
+> the handle anyway). On **0.2.x an unbound plan GRANTED** rather than
+> denying: plan targeting was skipped rather than failed, so a mis-keyed
+> plan handed every user the paid feature silently. **0.4.0 closed that**
+> — an unbound plan now denies. If you are pinned below 0.4.0, the
+> paid-only-as-free-user check above is the one that catches it, and an
+> `allowed: true` there means the plan never bound.
 
 **If the app has no plans yet, that is normal** — it is often why
 RevTurbine is being added. Set the plan to the example Playbook's `free`
