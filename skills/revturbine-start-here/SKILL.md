@@ -16,7 +16,6 @@ metadata:
   version: "0.39.1"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
-  sdk: "^0.2.77"
   tier: free
 ---
 

@@ -20,7 +20,6 @@ metadata:
   version: "0.7.2"
   safety_class: writes-app-code
   schema_version: ">=0.1.0 <0.2.0"
-  sdk: "^0.2.77"
   tier: free
 ---
 

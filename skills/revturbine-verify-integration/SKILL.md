@@ -22,7 +22,6 @@ metadata:
   version: "0.8.4"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
-  sdk: ">=0.2.77 <0.5.0"
   tier: free
 ---
 
