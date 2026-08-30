@@ -22,7 +22,7 @@ completeness.
    whatever shape it shows.
 2. **Ground every API reference in the shipped SDK/CLI.** `@revturbine/sdk`
    exports `RevTurbineProvider`, `Gate`, `useEntitlement`, `usePlacement`,
-   `Slot`; local mode is `localRuntime: { exportedConfig }`; the CLI command is
+   `Slot`; local mode is `localRuntime: { playbook }`; the CLI command is
    `revturbine` (`validate` / `launch` / `login` / `status`). Do not invent
    surface.
 3. **Thread the guardrails inline.** Additive-only fallback; client check is a
