@@ -1,0 +1,49 @@
+name: Skills release gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+    inputs:
+      run_outcome_evals:
+        description: Run protected, token-spending outcome evals
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run check
+      - name: Check external links
+        if: github.event_name != 'pull_request'
+        run: npm run check:links
+
+  outcome-evals:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_outcome_evals
+    environment: skill-outcome-evals
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13
+          cache: npm
+      - run: npm ci
+      - run: npm run eval:outcomes
+        env:
+          AGENT_EVAL_COMMAND: ${{ vars.AGENT_EVAL_COMMAND }}

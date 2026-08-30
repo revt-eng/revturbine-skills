@@ -57,3 +57,15 @@ metadata:
 
 `skills.sh.json` groups the catalog for discovery. Add each new skill to the
 right grouping.
+
+## Release gate
+
+Run `npm ci && npm test && npm run check` before every change. The gate derives
+the command and SDK inventories from the pinned public packages; do not commit
+generated inventories or fixture applications. `npm run check:links` adds the
+network-dependent URL sweep used by the nightly workflow.
+
+Every new skill must be added to `skills.sh.json` and
+`evals/trigger-fixtures.json`. If it writes testable output, also add its
+mechanical assertions to `evals/outcome-contracts.json`. Outcome workspaces are
+created under the operating system's temporary directory and are never tracked.

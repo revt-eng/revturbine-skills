@@ -1,0 +1,8 @@
+[
+  { "skill": "revturbine-integrate-sdk", "assertions": ["app_compiles", "disabled_render_unchanged"] },
+  { "skill": "revturbine-wire-monetization-surfaces", "assertions": ["app_compiles", "playbook_validates", "disabled_render_unchanged", "denied_fallback_works"] },
+  { "skill": "revturbine-verify-integration", "assertions": ["app_compiles", "playbook_validates", "disabled_render_unchanged", "denied_fallback_works"] },
+  { "skill": "revturbine-author-playbook", "assertions": ["playbook_validates"] },
+  { "skill": "revturbine-connect-billing", "assertions": ["app_compiles", "disabled_render_unchanged"] },
+  { "skill": "revturbine-release-lifecycle", "assertions": ["playbook_validates"] }
+]
