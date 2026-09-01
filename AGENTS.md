@@ -69,3 +69,11 @@ Every new skill must be added to `skills.sh.json` and
 `evals/trigger-fixtures.json`. If it writes testable output, also add its
 mechanical assertions to `evals/outcome-contracts.json`. Outcome workspaces are
 created under the operating system's temporary directory and are never tracked.
+
+## Branching (plan 221)
+
+- Branch from `origin/main` in a dedicated external worktree
+  (`pnpm --dir <devkit> worktree add …`); PRs target `main`.
+- The canonical checkout under `revt-eng/` stays on `main`, clean, and
+  fast-forwarded — refresh with `pnpm --dir <devkit> canonical:refresh`;
+  never `git checkout -b` inside it.
