@@ -1,0 +1,10 @@
+[
+  { "prompt": "Load the front door first before any other RevTurbine skill", "expected": "revturbine-start-here" },
+  { "prompt": "Install the SDK and mount the provider", "expected": "revturbine-integrate-sdk" },
+  { "prompt": "Gate a feature and add a paywall placement", "expected": "revturbine-wire-monetization-surfaces" },
+  { "prompt": "Verify my integration and diagnose why a decision is wrong", "expected": "revturbine-verify-integration" },
+  { "prompt": "Author plans, entitlements, trials, and placements in the Playbook", "expected": "revturbine-author-playbook" },
+  { "prompt": "Review our pricing and packaging monetization strategy", "expected": "revturbine-monetization-best-practices" },
+  { "prompt": "Connect Stripe billing products and prices", "expected": "revturbine-connect-billing" },
+  { "prompt": "Launch the Playbook and move from local to hosted", "expected": "revturbine-release-lifecycle" }
+]

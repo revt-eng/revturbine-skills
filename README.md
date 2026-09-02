@@ -41,6 +41,20 @@ each lives at `skills/<name>/SKILL.md` with a trigger-rich `description`. See
 `AGENTS.md` for the authoring rules — especially that RevTurbine config in
 examples is the **canonical Playbook**, never the deprecated legacy shape.
 
+The release gate is executable locally:
+
+```bash
+npm ci
+npm test
+npm run check
+```
+
+It derives CLI commands, the schema stamp, and SDK declarations from the
+pinned public packages. Generated inventories and outcome-eval apps stay in
+temporary directories; only the compact trigger and assertion contracts are
+tracked. The nightly workflow also runs `npm run check:links` to catch external
+documentation drift.
+
 ## Links
 
 - [Docs](https://revturbine.com/docs) · [`@revturbine/sdk`](https://www.npmjs.com/package/@revturbine/sdk) · [`@revturbine/cli`](https://www.npmjs.com/package/@revturbine/cli)

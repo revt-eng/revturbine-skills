@@ -22,7 +22,7 @@ completeness.
    whatever shape it shows.
 2. **Ground every API reference in the shipped SDK/CLI.** `@revturbine/sdk`
    exports `RevTurbineProvider`, `Gate`, `useEntitlement`, `usePlacement`,
-   `Slot`; local mode is `localRuntime: { exportedConfig }`; the CLI command is
+   `Slot`; local mode is `localRuntime: { playbook }`; the CLI command is
    `revturbine` (`validate` / `launch` / `login` / `status`). Do not invent
    surface.
 3. **Thread the guardrails inline.** Additive-only fallback; client check is a
@@ -57,3 +57,23 @@ metadata:
 
 `skills.sh.json` groups the catalog for discovery. Add each new skill to the
 right grouping.
+
+## Release gate
+
+Run `npm ci && npm test && npm run check` before every change. The gate derives
+the command and SDK inventories from the pinned public packages; do not commit
+generated inventories or fixture applications. `npm run check:links` adds the
+network-dependent URL sweep used by the nightly workflow.
+
+Every new skill must be added to `skills.sh.json` and
+`evals/trigger-fixtures.json`. If it writes testable output, also add its
+mechanical assertions to `evals/outcome-contracts.json`. Outcome workspaces are
+created under the operating system's temporary directory and are never tracked.
+
+## Branching (plan 221)
+
+- Branch from `origin/main` in a dedicated external worktree
+  (`pnpm --dir <devkit> worktree add …`); PRs target `main`.
+- The canonical checkout under `revt-eng/` stays on `main`, clean, and
+  fast-forwarded — refresh with `pnpm --dir <devkit> canonical:refresh`;
+  never `git checkout -b` inside it.

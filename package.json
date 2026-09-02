@@ -1,0 +1,20 @@
+{
+  "name": "revturbine-skills-release-gate",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "check": "node scripts/release-gate.mjs",
+    "check:links": "node scripts/release-gate.mjs --links",
+    "test": "node --test tests/*.test.mjs",
+    "eval:outcomes": "node scripts/run-outcome-evals.mjs"
+  },
+  "devDependencies": {
+    "@revturbine/cli": "0.17.1",
+    "@revturbine/sdk": "0.7.4",
+    "semver": "7.7.3",
+    "yaml": "2.9.0"
+  }
+}
