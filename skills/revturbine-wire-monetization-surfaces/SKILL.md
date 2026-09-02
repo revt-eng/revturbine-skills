@@ -177,9 +177,20 @@ derived from runtime state, a render counter, or the user — or the
 Playbook targets an id that exists nowhere and discovery fills the
 dashboard with one-off ghosts.
 
+- **Record every slot id you declare** in the notes file
+  (`revturbine-playbook-notes.md`) — not only when the Playbook comes
+  later. That file is the contract `revturbine-author-playbook` targets,
+  and an id that never reaches it becomes a placement pointing at a slot
+  no code renders, which can never show and reports nothing. Where a
+  Playbook already exists, reconcile against it: match the ids it
+  targets rather than introducing near-miss synonyms.
 - **An empty slot renders nothing.** That is the designed behavior, not
-  an error; supply the `fallback` prop where the page needs a baseline
-  instead of absence.
+  an error, and it is what a correctly-wired slot does when no placement
+  matches this user. The `fallback` prop exists for the rare page that
+  cannot render without a baseline — reach for it last, and never to
+  paper over an empty slot you haven't diagnosed. A slot rendering its
+  `fallback` on every view is a wiring failure: check the Playbook
+  targets that id.
 - **Pick the component from the gallery.** The docs' Component Gallery
   demonstrates the common built-in slot components live — banner, modal,
   toast, button, quota meter, in-page card — and the package registers

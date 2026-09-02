@@ -125,6 +125,14 @@ earlier one, so iteration is required. For every object: get the shape from
 data-quality rules that keep a Playbook demo-clean and launch-safe), and keep
 handles stable and readable — the app's code will reference them.
 
+**Slot ids come from the app, not from you.** A Fixed placement can only show
+at a slot id the app already renders, so target the ids recorded in
+`revturbine-playbook-notes.md` (and confirm them against the app's slots where
+you can see the code). If the moment you need has no slot, add it to the notes
+as an app to-do and hand off to **`revturbine-wire-monetization-surfaces`** —
+an invented id points at nothing, the placement never shows, and nothing
+reports it.
+
 Three rules from the reference worth repeating. First, **grant, don't deny**:
 access exists only where a rule grants it (no matching rule → denied), and
 where several rules match, the most permissive one wins. Gate by granting on
