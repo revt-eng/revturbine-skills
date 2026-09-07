@@ -227,8 +227,8 @@ at a natural transition, never on passive render. **Banner, in-page, button and 
 safe on render. Outbound channels such as email exist in the model for the
 RevTurbine-initiated categories, but outbound dispatch is not built yet.
 
-Placements are additive: a slot with no winning payload renders nothing, and the product
-must remain fully usable in that state.
+A slot with no winning payload renders nothing, and the product must remain fully
+usable in that state.
 
 ## How a decision resolves
 
