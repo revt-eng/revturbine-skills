@@ -190,9 +190,11 @@ problem — these skills carry the standard flow.
 
 ## Ground rules
 
-- **Never break the app.** The app must keep working if RevTurbine is absent or a
-  placement resolves to nothing — never leave the user stuck. The wiring
-  skills carry the mechanics.
+- **Design for the empty state.** Layouts must hold up when a slot is empty,
+  and must not reserve space that only looks right when filled. A slot renders
+  nothing whenever no placement matches the current user; targeting, caps and
+  cooldowns can all produce that. Never leave the user stuck. The wiring skills
+  carry the mechanics.
 - **The client is a UX hint, not the authority.** Any revenue-critical
   entitlement (anything that costs your human money or moves their end users'
   money) is re-checked on the backend before value is granted, using whatever

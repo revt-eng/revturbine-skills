@@ -88,9 +88,9 @@ mode has a Playbook to serve before the app depends on it.
    placement analytics — most of hosted mode's payoff.
 
 Then prove the move held: the gate that worked locally behaves the same
-in hosted mode, and the app still renders its baseline UI when
-RevTurbine is unreachable or a placement resolves to nothing — hosted
-mode added a network dependency, and it must never take the product down.
+in hosted mode, and the app still renders its baseline UI when a placement
+resolves to nothing. Hosted mode adds no call to RevTurbine at decision
+time: it changes where the Playbook comes from, not where decisions run.
 Then offer this demonstration: change one thing in the Playbook, take it
 through the review section to launch (their call), and reload — the app
 changes with no code deploy.

@@ -134,15 +134,13 @@ self-contained. Report per group even when clean.
 4. **Transport and keys.** Events actually arriving, the ingest key
    present and accepted, and no silent fallback swallowing the
    clickstream.
-5. **The app never breaks.** With RevTurbine absent, disabled, or
-   returning nothing, the app renders its baseline UI: no blocking
-   spinner on SDK readiness, a sensible fallback where no placement
-   matches a gate, no dead ends. Exercise it — run the app with the
-   provider unreachable and watch what a user sees. During the outage,
-   placements resolve to nothing and entitlement checks **deny** —
-   access needs an affirmative grant, so an outage refuses rather than
-   leaking a paid feature; confirm no page depends on a grant to render
-   its baseline.
+5. **The app renders its baseline UI without a placement.** Exercise
+   the empty state: run the app with the SDK disabled or every provider
+   failing and watch what a user sees. Expect no blocking spinner on SDK
+   readiness, a sensible fallback where no placement matches a gate, and
+   no dead ends. Placements resolve to nothing and entitlement checks
+   **deny** in that state (access needs an affirmative grant), so confirm
+   no page depends on a grant to render its baseline.
 6. **Rendered surfaces are usable.** Modals and banners must be
    dismissible by keyboard, manage focus sanely, and stay readable at
    normal zoom and contrast. A paywall a user cannot escape is a
