@@ -16,7 +16,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.15.0"
+  version: "0.16.0"
   safety_class: writes-config-draft
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -35,7 +35,8 @@ Playbook file** (local mode — the SDK reads it directly) or a **staged draft**
 
 **Two rules above all: author against the live schema, and never guess a price
 silently.** Model every object on the current Playbook schema
-(`revturbine schema`), not on memory or examples. And go looking for the real
+(`revturbine schema` — the schema itself is under its `schema` key, beside
+`schema_version`), not on memory or examples. And go looking for the real
 numbers — their pricing page, their docs, their own answer. Where a price or
 limit has no source, say so rather than quietly filling the gap, and offer
 your human the choice: **a designed proposal** (your reasoning, labelled as a
@@ -173,6 +174,19 @@ or your file against `--live`).
 **Local mode**: reload the app and show your human the change working (the
 gate, the new limit, the new copy). The Playbook file ships with the app, so
 reaching real users is their normal deploy.
+
+**`validate` sees the file; only the running app sees the wiring.** The
+app builds its own options around the Playbook, so a file that validates
+is not yet a Playbook the running app is using. After any change to the
+Playbook's *shape* — a schema conversion, a moved or removed field, a new
+header block — prove it in the running app, not in a script that imports
+the file: `useRevTurbine().initStatus.ok` is `true`, one real placement
+renders, and `sdk.diagnoseSlotInventory()` reports nothing under
+`authoredButUnmounted` for the placements you touched (both 0.8.0+). Run
+that wherever the team already proves changes — a branch or preview
+environment if that is how they ship, the local dev server if not; use
+their existing workflow rather than inventing one. Then the paragraph
+below applies: the audit closes a shape change.
 
 **Hosted mode**: read the diff for **removals** first — import is convergent,
 so an entity missing from your file is a real deletion. Read it by which

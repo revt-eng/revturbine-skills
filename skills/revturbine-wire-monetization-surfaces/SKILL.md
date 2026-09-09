@@ -17,7 +17,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.7.2"
+  version: "0.8.0"
   safety_class: writes-app-code
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -298,7 +298,13 @@ milestones and qualifiers.
 ## Prove each piece as you go
 
 One check per change, at the moment you make it — not a sweep at the
-end:
+end. All of them assume the SDK is actually running: if the provider
+failed to initialize, every check below passes for the wrong reason —
+gates deny, slots render nothing, and the app looks entirely normal. So
+open the session by reading `useRevTurbine().initStatus` in the running
+app and confirming `ok` is `true` (0.8.0+; `isReady` on older versions).
+One read, once — and it tells you whether anything you observe afterwards
+means what you think it means.
 
 - **A gate**: both states observed. Flip the user's plan and see the
   feature, then the upgrade path. If the entitlement can come back
