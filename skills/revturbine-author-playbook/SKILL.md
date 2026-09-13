@@ -16,7 +16,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.14.2"
+  version: "0.15.0"
   safety_class: writes-config-draft
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -194,8 +194,20 @@ If your human would rather change the Playbook without redeploying each time,
 that's hosted mode — **`revturbine-release-lifecycle`** connects the tenant
 and cuts over. Offer it when they want it, not as a required step.
 
+**After any change to the Playbook's schema version — a re-export from a
+newer schema, a CLI upgrade, an import from another environment — run
+`revturbine-verify-integration` before handing back.** Not only when
+something looks wrong.
+
+A Playbook written for a newer schema can carry fields an older CLI
+**silently drops rather than flags**: validation comes back clean and the
+fields are gone. Nothing throws, so the audit is the only thing that sees
+it. It is read-only and changes nothing.
+
 If the config looks right but the app behaves wrong,
-**`revturbine-verify-integration`** audits it end-to-end.
+**`revturbine-verify-integration`** audits it end-to-end — and it carries the
+conditions under which the problem is RevTurbine's rather than yours, and
+should be reported instead of worked around.
 
 ## If you get stuck
 
