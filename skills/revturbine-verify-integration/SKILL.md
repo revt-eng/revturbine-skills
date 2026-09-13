@@ -8,9 +8,11 @@ description: >
   returns nothing. Read-only: it changes nothing; fixes route to the
   owning skill. Use before a first production launch, when someone says
   "verify the integration", "audit this", "check my setup", "is it safe to
-  launch", or whenever the app misbehaves — a gate that never locks, a
-  placement that never shows, a limit that never bites, events missing
-  from analytics. Skip if the job is making a known change: authoring the
+  launch", after any SDK version or Playbook schema change, or whenever the
+  app misbehaves — a gate that never locks, a placement that never shows, a
+  limit that never bites, events missing from analytics. Also the place that
+  says when a problem is RevTurbine's rather than yours and should be
+  reported instead of worked around. Skip if the job is making a known change: authoring the
   Playbook (revturbine-author-playbook), wiring the UI
   (revturbine-wire-monetization-surfaces), connecting Stripe
   (revturbine-connect-billing), or launching
@@ -19,7 +21,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.8.4"
+  version: "0.9.0"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -196,6 +198,41 @@ which you inferred.
 
 If the audit was pre-launch and comes back clean, say so and hand off to
 `revturbine-release-lifecycle` — launching is your human's call.
+
+## When to stop and tell RevTurbine
+
+Most integration problems are integration problems, and this audit finds
+them. A few are not, and grinding on those costs weeks — one integration
+spent three attempts and a `MutationObserver` working around a defect that
+was ours.
+
+**Escalate when the audit comes back clean and the behavior is still
+wrong.** Concretely, any one of these is enough:
+
+- **A placement is configured, targeted at this user, and its slot id in the
+  code matches the placement's — and nothing renders, with no error and no
+  reason code.** A correct configuration that produces silence is not a
+  configuration problem.
+- **`explainPlacementDecision()` disagrees with what the app actually
+  does.** The probe and the decision path are supposed to be the same
+  answer. When they differ, at least one of them is wrong, and neither is
+  yours.
+- **A documented option has no observable effect** after you have confirmed
+  it reaches the SDK — you passed it, the value is what you think it is, and
+  nothing downstream changes.
+- **Behavior changed across an SDK upgrade and the changelog does not
+  mention it.** `CHANGELOG.md` in the SDK repo records every breaking change
+  with the version it landed in and the version that made it fail closed. A
+  behavior change absent from it is either undocumented or unintended.
+- **You have followed the remediation an error message gave you and the
+  error is unchanged.**
+
+Do not keep trying workarounds past this point, and do not tell your human
+the integration is wrong when you have evidence it is not. Say what you
+observed, say you believe it is a product defect, and offer to file it —
+`revturbine-start-here` → If you get stuck has the route. Include the SDK
+version, the Playbook (redacted), the exact reproduction, and which of the
+conditions above you hit. Never include tokens or secrets.
 
 ## If you get stuck
 

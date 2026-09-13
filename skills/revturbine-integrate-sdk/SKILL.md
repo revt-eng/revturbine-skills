@@ -17,7 +17,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.8.0"
+  version: "0.9.0"
   safety_class: writes-app-code
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -321,6 +321,24 @@ a Playbook written for a newer schema can carry fields an older CLI
 **silently drops rather than flags** — validation comes back clean and
 the fields are gone.
 
+## After a version change, verify — don't wait to be told
+
+**Whenever you change the SDK version or the Playbook's schema version, run
+`revturbine-verify-integration` before moving on.** Not if something looks
+wrong: every time.
+
+The reason is the failure mode. Almost nothing here throws — a mismatch
+degrades instead of erroring, so an entitlement denies, a slot renders
+nothing, a limit stops being enforced, and the app looks fine. "Run it if it
+misbehaves" never fires when the symptom is silence, and an upgrade is
+exactly when a silent mismatch gets introduced. The audit is read-only and
+changes nothing, so there is no cost to running it and a whole class of
+defect that only it catches.
+
+That covers a version bump in `package.json`, a `revturbine` CLI upgrade, a
+Playbook re-exported from a newer schema, and the local-to-hosted provider
+swap.
+
 ## Where to go next
 
 - **Gate features and place monetization surfaces** —
@@ -329,7 +347,10 @@ the fields are gone.
 - **Author a real Playbook** — `revturbine-author-playbook`.
 - **Go live and make the Playbook changeable without a deploy** —
   `revturbine-release-lifecycle`.
-- **Something misbehaves** — `revturbine-verify-integration`.
+- **After any version or schema change, and whenever something misbehaves** —
+  `revturbine-verify-integration`. It also carries the conditions under which
+  a problem is ours rather than yours, and should be reported to RevTurbine
+  instead of worked around.
 
 ## If you get stuck
 
