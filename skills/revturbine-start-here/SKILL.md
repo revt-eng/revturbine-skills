@@ -13,7 +13,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.39.1"
+  version: "0.40.0"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -84,10 +84,14 @@ provider's import (`localRuntime: { playbook }`).
 there. JavaScript or TypeScript uses the same `@revturbine/sdk` package through
 its headless entry in local runtime mode — the hosted `RevTurbineServer`
 provider is not released yet. Python uses `revturbine` (`pip install
-revturbine`), where the check is `check_entitlement()`. **No other language has
-a server SDK, and there is no published HTTP API to substitute** — say so
-plainly, record server-side verification as an open gap rather than inventing a
-call, and offer to file it (see If you get stuck).
+revturbine`; a distro-managed Python refuses that under PEP 668 — use a
+venv or `--break-system-packages`), where the check is `check_entitlement()`. Rust
+uses the `revturbine` crate — `https://revturbine.com/docs/getting-started/rust/`.
+All three evaluate the same Playbook with byte-identical decisions. **No
+other language has a server SDK, and there is no published HTTP API to
+substitute** — say so plainly, record server-side verification as an open
+gap rather than inventing a call, and offer to file it (see If you get
+stuck).
 
 The state sets the next move: **not installed** or **partially integrated** →
 invoke **`revturbine-integrate-sdk`** first (ends with the provider mounted, a
@@ -121,6 +125,16 @@ the next reload; in **hosted mode** edits flow `download` → edit → `validate
    **`revturbine-verify-integration`** *(also useful any time something
    misbehaves)*, then launch through **`revturbine-release-lifecycle`** — the
    human's call.
+
+**Verification is how each job ends, not a job your human elects.** Every
+skill above closes by proving its own change on the running app, and that
+check is never optional and never something to ask permission for —
+reading costs nothing and changes nothing. The full audit in
+`revturbine-verify-integration` is the expensive, deliberate one:
+**run it** — don't ask — after an SDK version jump, after a Playbook
+schema conversion, and whenever a surface misbehaves. It is read-only, so
+there is nothing for your human to approve; tell them it is running and
+what it found. Never present it as an alternative to doing the work.
 
 **The dashboard and an account.** A free account at **revturbine.com** turns
 on **hosted mode** and gives these jobs additional features and a UI: your
@@ -174,7 +188,8 @@ to stage or launch: save the Playbook file and reload the app.
 
 Lean on two constantly: `revturbine schema` emits the current Playbook
 schema — author against it, never from memory. It emits the whole schema in one
-document with no per-entity filter, so pull it once and work from that copy.
+document with no per-entity filter, so pull it once and work from that copy;
+the output is `{ schema_version, schema }`, and the schema is under `schema`.
 `revturbine validate <file>` then checks your work before staging. Exact syntax from
 `revturbine --help`; never guess flags or fields.
 

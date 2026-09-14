@@ -17,7 +17,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.9.0"
+  version: "0.10.0"
   safety_class: writes-app-code
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -43,6 +43,20 @@ one entitlement, change the user's plan, confirm the answer changes, then
 delete the test. It gates nothing — it displays a value. You need it
 because a working integration and a broken one are otherwise
 indistinguishable: both render the app exactly as before.
+
+**Run it through the app's own provider, and confirm the provider
+started.** A standalone script that imports the Playbook file directly
+proves the file, not the wiring — it passes while the running app is dead,
+because it never exercises the options the app actually builds. Mount the
+check inside the app, and before you read any decision read
+`useRevTurbine().initStatus`: `ok` is `true` when the SDK is running, and
+when it is not, `phase`, `message` and `remediation` say what failed and
+what to change. It is populated even when `sdk` is `null`, which is
+exactly the case where nothing else is reachable. An initialization
+failure is reported, not thrown — the app is designed to keep rendering
+without RevTurbine — so `initStatus` is what tells you which of the two
+you are looking at. (`initStatus` arrived in `@revturbine/sdk` 0.8.0; on an
+older version `isReady` and `error` are the only signals.)
 
 That is also the standard to hold throughout. The app must build and render
 as it did before, and **never require RevTurbine to render** — if removing
@@ -159,9 +173,12 @@ is right for now. Filling these in is
 same change as any Playbook that adds one.
 
 **Then check it started.** `useRevTurbine()` reports `isReady` once the SDK
-is running, and `error` when it is not. Check it rather than assuming: a
-provider that failed to start still lets the app render normally, so
-nothing looks wrong from the outside.
+is running, and `initStatus` — `{ ok, phase, message, remediation }` — when
+it is not (0.8.0+; `error` on older versions). Check it rather than
+assuming: a provider that failed to start still lets the app render
+normally, so nothing looks wrong from the outside. In a development build
+the SDK also renders a visible diagnostic on init failure; in production
+`initStatus` is the only signal.
 
 ## Load the example Playbook
 
@@ -197,6 +214,14 @@ it exists rather than letting them find it in a network tab.
 If the repo already has a real Playbook, use that instead, and pick any
 entitlement it grants to one plan and not another. Authoring a real one is
 `revturbine-author-playbook`.
+
+**A Playbook reaches the SDK one of two ways: imported from a file checked
+in with the app, or served by RevTurbine.** Do not put the app's own
+endpoint in between — a backend route that fetches, reshapes or strips
+fields from the Playbook before handing it to the provider hands the SDK
+something the Playbook's own validation never saw. The one field this most
+often loses is `tenant_id`; pass `tenantId` as an init option instead, which
+is the authority either way.
 
 ## Set the user context
 
@@ -314,12 +339,14 @@ The other job this skill handles: a later session where RevTurbine is
 already integrated and the SDK or CLI needs updating. Skip this section
 entirely on a first install.
 
-Update the package, then re-run the closed-loop test above to confirm
-decisions still resolve. When the CLI moves, also re-validate the
-Playbook: the CLI carries the schema the Playbook is checked against, and
-a Playbook written for a newer schema can carry fields an older CLI
-**silently drops rather than flags** — validation comes back clean and
-the fields are gone.
+Update the package, then re-run the closed-loop test above **in the
+running app** — a version jump can change what the provider accepts, so
+confirm it still initializes (`initStatus.ok`) before you confirm decisions
+still resolve. When the CLI moves, also re-validate the Playbook: the CLI
+carries the schema the Playbook is checked against, and a Playbook written
+for a newer schema can carry fields an older CLI **silently drops rather
+than flags** — validation comes back clean and the fields are gone. Then
+the section below applies: the audit closes the upgrade.
 
 ## After a version change, verify — don't wait to be told
 
