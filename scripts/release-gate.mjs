@@ -103,6 +103,13 @@ export function extractSdkReferences(source) {
   for (const match of source.matchAll(/<\/?(Gate|Slot|RevTurbineProvider)\b/g)) references.add(match[1]);
   for (const match of source.matchAll(/\b(useCan|useEntitlement|usePlacement)\s*\(/g)) references.add(match[1]);
   for (const match of source.matchAll(/\b(rt|rtServer)\.(can|gate|track|update|identify)\s*\(/g)) references.add(match[2]);
+  // A method call on the client was invisible here, which made this check
+  // narrower than it reads: a skill could teach `sdk.somethingUnpublished()`
+  // and the gate passed. Found when plan 236 TASK-4 added the first such call
+  // and the gate stayed green against a pin that did not contain it — after
+  // plan 233 had cited this very gate as the reason NOT to teach those APIs
+  // early. The restraint was right; the guard behind it was not there.
+  for (const match of source.matchAll(/\b(?:sdk|rt|rtServer)\.([a-zA-Z][a-zA-Z0-9_]*)\s*\(/g)) references.add(match[1]);
   for (const match of source.matchAll(/\b(RevTurbineServer|RuntimeMode)\b/g)) references.add(match[1]);
   return [...references];
 }
