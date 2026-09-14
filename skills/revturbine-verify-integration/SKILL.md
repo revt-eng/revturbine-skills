@@ -21,7 +21,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.9.0"
+  version: "0.10.0"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -209,10 +209,25 @@ was ours.
 **Escalate when the audit comes back clean and the behavior is still
 wrong.** Concretely, any one of these is enough:
 
-- **A placement is configured, targeted at this user, and its slot id in the
-  code matches the placement's — and nothing renders, with no error and no
-  reason code.** A correct configuration that produces silence is not a
-  configuration problem.
+- **`diagnoseSlotInventory()` reports no findings and the placement still
+  does not render.** Ask the running app rather than comparing slot ids by
+  eye:
+
+  ```ts
+  const d = sdk.diagnoseSlotInventory();
+  console.log(d.configAvailable, d.authoredButUnmounted, d.mountedButUnauthored);
+  ```
+
+  `authoredButUnmounted` is a placement targeting a slot no code renders —
+  it can never show, and nothing else reports it. `mountedButUnauthored` is
+  a slot rendering its fallback forever. **Check `configAvailable` first**:
+  when it is `false` no Playbook reached the SDK, so `authored` is empty for
+  a completely different reason than "nothing is authored", and the two are
+  indistinguishable without it.
+
+  Both lists empty, config available, targeting matches, and still nothing
+  on screen — that is a correct configuration producing silence, which is
+  not a configuration problem.
 - **`explainPlacementDecision()` disagrees with what the app actually
   does.** The probe and the decision path are supposed to be the same
   answer. When they differ, at least one of them is wrong, and neither is
@@ -225,14 +240,31 @@ wrong.** Concretely, any one of these is enough:
   with the version it landed in and the version that made it fail closed. A
   behavior change absent from it is either undocumented or unintended.
 - **You have followed the remediation an error message gave you and the
-  error is unchanged.**
+  error is unchanged.** Read it from `initStatus` rather than the console —
+  it is on the React context and is populated even when the SDK instance is
+  `null`, which is exactly the case where nothing else is reachable:
+
+  ```tsx
+  const { initStatus } = useRevTurbine();
+  if (!initStatus.ok) console.log(initStatus.phase, initStatus.message, initStatus.remediation);
+  ```
+
+  Every init-path error carries a `remediation` naming the fix. If you have
+  done what it says and `initStatus` is unchanged, the remediation is wrong
+  or the fix does not work — either way it is ours.
 
 Do not keep trying workarounds past this point, and do not tell your human
 the integration is wrong when you have evidence it is not. Say what you
 observed, say you believe it is a product defect, and offer to file it —
 `revturbine-start-here` → If you get stuck has the route. Include the SDK
 version, the Playbook (redacted), the exact reproduction, and which of the
-conditions above you hit. Never include tokens or secrets.
+conditions above you hit. Paste the `diagnoseSlotInventory()` output and the
+`initStatus` object when they are relevant — both are structured, neither
+contains user data. Never include tokens or secrets.
+
+These probes need **`@revturbine/sdk` 0.8.0 or newer**. On an older version
+the first and last conditions are a manual comparison instead; the rest read
+the same.
 
 ## If you get stuck
 
