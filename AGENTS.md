@@ -77,3 +77,14 @@ created under the operating system's temporary directory and are never tracked.
 - The canonical checkout under `revt-eng/` stays on `main`, clean, and
   fast-forwarded — refresh with `pnpm --dir <devkit> canonical:refresh`;
   never `git checkout -b` inside it.
+
+## Event graph source bindings
+
+Source annotations and `.revturbine/graph-bindings.json` link code to every
+citing graph node. Follow the [shared binding contract](https://github.com/revt-eng/revturbine-devkit/blob/main/docs/graphs/event-data/source-bindings.md)
+and devkit's event-graph query/audit/refresh skills (Codex and Claude).
+Before changing referenced code, locate its node IDs and trace its dependents.
+Move annotations with their targets; regenerate indexes after reference changes.
+From devkit run `pnpm graph bindings check --roots <absolute-checkout-map.json>`
+and `pnpm graph check`. JSON/generated/literal sidecars are intentional; keep
+historical refs pinned and use `bindings locate` for current local lines.
