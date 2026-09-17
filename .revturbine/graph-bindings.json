@@ -6,7 +6,7 @@
     {
       "repo": "revturbine-skills",
       "path": ".github/workflows/release-gate.yml",
-      "snapshot_commit": "2dcbf2d50fc7d17e0e2a5015d874abf66f46d0c6",
+      "snapshot_commit": "537ee102918312d3c9095db73f0bc2296449f99f",
       "body_sha256": "37e0ca7ce3b6df6339d28eacad986cb27e267926084988211a5ded89eeef348e",
       "anchors": [
         {
@@ -69,12 +69,12 @@
     {
       "repo": "revturbine-skills",
       "path": "scripts/release-gate.mjs",
-      "snapshot_commit": "2dcbf2d50fc7d17e0e2a5015d874abf66f46d0c6",
+      "snapshot_commit": "537ee102918312d3c9095db73f0bc2296449f99f",
       "body_sha256": "c8517985070397228e18ce72699448642cc4c4a47d3bc5c01f75f76841fdd58f",
       "anchors": [
         {
           "id": "gref:d743e44b6674beba5931",
-          "snapshot_line": 2,
+          "snapshot_line": 1,
           "body_line": 1,
           "target_sha256": "ad73ca8dd2be89150d9ce0f13eae68ebf5fc6eae24f81e521b6223459d4a6005",
           "node_ids": [
@@ -89,12 +89,12 @@
     {
       "repo": "revturbine-skills",
       "path": "scripts/run-outcome-evals.mjs",
-      "snapshot_commit": "2dcbf2d50fc7d17e0e2a5015d874abf66f46d0c6",
+      "snapshot_commit": "537ee102918312d3c9095db73f0bc2296449f99f",
       "body_sha256": "9354f1f5b69dac4726140ec7fb922f328bc0c6f4b15ee283ac9ebb20f5b1d607",
       "anchors": [
         {
           "id": "gref:2e674bf3a3a4b1d49ae0",
-          "snapshot_line": 2,
+          "snapshot_line": 1,
           "body_line": 1,
           "target_sha256": "ad73ca8dd2be89150d9ce0f13eae68ebf5fc6eae24f81e521b6223459d4a6005",
           "node_ids": [
