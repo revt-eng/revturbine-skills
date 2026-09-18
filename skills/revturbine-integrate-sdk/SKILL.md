@@ -17,7 +17,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.10.0"
+  version: "0.11.0"
   safety_class: writes-app-code
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -49,14 +49,13 @@ started.** A standalone script that imports the Playbook file directly
 proves the file, not the wiring — it passes while the running app is dead,
 because it never exercises the options the app actually builds. Mount the
 check inside the app, and before you read any decision read
-`useRevTurbine().initStatus`: `ok` is `true` when the SDK is running, and
-when it is not, `phase`, `message` and `remediation` say what failed and
-what to change. It is populated even when `sdk` is `null`, which is
-exactly the case where nothing else is reachable. An initialization
-failure is reported, not thrown — the app is designed to keep rendering
-without RevTurbine — so `initStatus` is what tells you which of the two
-you are looking at. (`initStatus` arrived in `@revturbine/sdk` 0.8.0; on an
-older version `isReady` and `error` are the only signals.)
+`useRevTurbine()`: if `initStatus.ok` is `false`, `phase`, `message` and
+`remediation` say what failed and what to change, even when `sdk` is `null`.
+If it is `true`, still wait for **`isReady` and a non-null `sdk`** before
+reading decisions: `ok` also starts as `true` while initialization is
+pending. An initialization failure is reported without stopping the host
+app from rendering. (`initStatus` arrived in `@revturbine/sdk` 0.8.0; on an
+older version use `isReady`, `sdk` and `error`.)
 
 That is also the standard to hold throughout. The app must build and render
 as it did before, and **never require RevTurbine to render** — if removing
@@ -110,8 +109,26 @@ launcher, not the CLI.
 The packages declare their own Node and React requirements — check the
 install output for engine warnings; npm warns on a mismatch rather than
 stopping. Apps not built on React use `@revturbine/sdk/headless` — session
-setup is in the docs' Headless API guide; the user context and the
-closed-loop test below apply unchanged.
+setup uses the same awaited session API as the root entry:
+
+```ts
+import { initRevTurbine } from '@revturbine/sdk/headless';
+import playbook from './revturbine.playbook.json';
+
+const session = await initRevTurbine({
+  localRuntime: { playbook },
+  user: { id: 'user_123', plan_handle: 'free' },
+});
+const result = await session.can('advanced_export');
+const branding = session.sdk.getBranding();
+```
+
+`initRevTurbine` returns a Promise of a session; instance-only methods live
+on `session.sdk`. Use the app's actual user, plan and entitlement handles.
+The public initializer preserves identity, plan and custom context without
+a redundant `id` warning from SDK 0.9.2. See the
+[Headless API guide](https://revturbine.com/docs/guides/headless-api/).
+The user context and closed-loop test below apply unchanged.
 
 ## Mount the provider
 
@@ -172,13 +189,21 @@ is right for now. Filling these in is
 `revturbine-wire-monetization-surfaces`'s job, and it must happen in the
 same change as any Playbook that adds one.
 
-**Then check it started.** `useRevTurbine()` reports `isReady` once the SDK
-is running, and `initStatus` — `{ ok, phase, message, remediation }` — when
-it is not (0.8.0+; `error` on older versions). Check it rather than
-assuming: a provider that failed to start still lets the app render
-normally, so nothing looks wrong from the outside. In a development build
-the SDK also renders a visible diagnostic on init failure; in production
-`initStatus` is the only signal.
+**Then check it started.** Read `initStatus` first, then require `isReady`
+and `sdk` before treating the provider as initialized. Check inside this
+mounted provider: a provider that failed to start still lets the app render
+normally. Development failure banners and theme-override warnings work in
+published SDK packages from **0.8.9**; earlier 0.8.x packages have the
+`initStatus` probe but unreliable development diagnostics. `initStatus`
+remains available in production. See the
+[React status example](https://revturbine.com/docs/getting-started/react/#userevturbine).
+
+Local mode needs no placeholder `tenantId`, API key or endpoint. Supply
+user context for the identity and rules your app uses, CTA resolvers for
+authored action types, and optional `branding` in `options`. Set the
+placement palette with `colorScheme="light"`, `"dark"` or `"system"`
+directly on `RevTurbineProvider`, outside `options`; see
+[theming](https://revturbine.com/docs/guides/theming/).
 
 ## Load the example Playbook
 
@@ -206,10 +231,10 @@ changes without a redeploy — is `revturbine-release-lifecycle`, when your
 human is ready; when it does, it sends the provider edit back here
 (below).
 
-One piece of network traffic remains in every mode, this one included: a
-keyless install beacon carrying config-shape counts and a hashed config id,
-never user data. Opt out with `anonymousTelemetry: false`. Tell your human
-it exists rather than letting them find it in a network tab.
+An optional keyless install beacon can run in local mode, carrying
+config-shape counts and a hashed config id, never user data. Opt out of that
+beacon with `anonymousTelemetry: false`; this is not a global network switch.
+Tell your human it exists rather than letting them find it in a network tab.
 
 If the repo already has a real Playbook, use that instead, and pick any
 entitlement it grants to one plan and not another. Authoring a real one is
@@ -219,9 +244,12 @@ entitlement it grants to one plan and not another. Authoring a real one is
 in with the app, or served by RevTurbine.** Do not put the app's own
 endpoint in between — a backend route that fetches, reshapes or strips
 fields from the Playbook before handing it to the provider hands the SDK
-something the Playbook's own validation never saw. The one field this most
-often loses is `tenant_id`; pass `tenantId` as an init option instead, which
-is the authority either way.
+something the Playbook's own validation never saw. Preserve the validated
+artifact, including `tenant_id` when present. An explicit `tenantId` init
+option is authoritative, but remains optional in local mode. In hosted
+mode keep the endpoint pointing at RevTurbine; `custom_endpoints` can route
+context and telemetry through a proxy, not Playbook delivery. See
+[runtime modes](https://revturbine.com/docs/guides/runtime-modes/#keep-the-playbook-intact).
 
 ## Set the user context
 
@@ -262,8 +290,9 @@ plan never bound, and the usual cause is still passing `plan: { id }`.
 > client often did not have — and in practice was usually populated with
 > the handle anyway). On **0.2.x an unbound plan GRANTED** rather than
 > denying: plan targeting was skipped rather than failed, so a mis-keyed
-> plan handed every user the paid feature silently. **0.4.0 closed that**
-> — an unbound plan now denies. If you are pinned below 0.4.0, the
+> plan handed every user the paid feature silently. The public changelog records
+> fail-closed behavior from **0.3.0 in TypeScript and 0.4.0 in Python/Rust**.
+> On older releases, the
 > paid-only-as-free-user check above is the one that catches it, and an
 > `allowed: true` there means the plan never bound.
 
@@ -274,13 +303,12 @@ plan and carry on. Wiring real plans arrives with billing
 
 Then the rules for the id, which the SDK does not enforce for you:
 
-- **The app always supplies the id — the SDK will not stop you.** An
-  empty id, or no user at all, mints a **fresh random anonymous UUID on
-  every init**, with no warning, and checks evaluate normally against it.
-  That breaks caps, usage attribution and analytics identity in a way
-  nothing surfaces. (`identify('')` is refused; init is not.) Supporting
-  signed-out visitors is on the roadmap, not shipped, so keep RevTurbine
-  off pre-signup surfaces and resolve the user before mounting.
+- **Supply the signed-in user's id.** Omitting `user` intentionally uses
+  an anonymous identity. An explicitly blank id logs an error and falls
+  back to an anonymous id; it does not stop the host app. Neither should
+  stand in for a signed-in user: caps, usage and analytics would attach to
+  the wrong identity. Resolve the app's user before mounting when checks
+  depend on that identity. (`identify('')` is refused.)
 - **Stable, non-guessable, and never an email address.** An email in the id
   puts personal data into every decision.
 - **The same id on the browser and the backend.** A backend keyed by
@@ -341,7 +369,7 @@ entirely on a first install.
 
 Update the package, then re-run the closed-loop test above **in the
 running app** — a version jump can change what the provider accepts, so
-confirm it still initializes (`initStatus.ok`) before you confirm decisions
+confirm it still initializes (`initStatus.ok`, `isReady` and non-null `sdk`) before you confirm decisions
 still resolve. When the CLI moves, also re-validate the Playbook: the CLI
 carries the schema the Playbook is checked against, and a Playbook written
 for a newer schema can carry fields an older CLI **silently drops rather
