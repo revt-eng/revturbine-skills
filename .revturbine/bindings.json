@@ -1,0 +1,25 @@
+{
+  "version": "2.0.0",
+  "bindings": [
+    {
+      "path": ".github/workflows/release-gate.yml",
+      "node_id": "job:github:skills-outcome-evals"
+    },
+    {
+      "path": ".github/workflows/release-gate.yml",
+      "node_id": "job:github:skills-release-gate"
+    },
+    {
+      "path": ".github/workflows/release-gate.yml",
+      "node_id": "result:skills:release-gate"
+    },
+    {
+      "path": ".github/workflows/release-gate.yml",
+      "node_id": "schedule:github:skills-release-gate"
+    },
+    {
+      "path": ".github/workflows/release-gate.yml",
+      "node_id": "view:external:github:skills-release-gate"
+    }
+  ]
+}
