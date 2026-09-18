@@ -17,7 +17,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.11.0"
+  version: "0.12.0"
   safety_class: writes-app-code
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -86,23 +86,24 @@ resolving, you are in the wrong skill.
 
 ## Install
 
-Two routes. Prefer the scaffold — it installs both packages at the versions
-that work together and leaves an example Playbook behind:
+Two routes. Prefer the scaffold — it installs missing dependencies and
+creates a starter Playbook for a fresh integration:
 
 ```bash
 npm create revturbine@latest   # or, where the CLI is pinned: revturbine init
 ```
 
-The scaffold detects the stack and package manager, installs the SDK and
-the CLI, writes the example Playbook at the repo root, and installs the
-RevTurbine Agent Skills (`--no-skills` opts out; `--dry-run` reports
-without installing). **It never edits app code** — mounting the provider is
-yours, below.
+The scaffold detects the stack and package manager, requests the latest SDK
+when it is missing, pins the CLI exactly, and installs the RevTurbine Agent
+Skills (`--no-skills` opts out; `--dry-run` reports without installing).
+Existing dependency declarations and integrations are preserved. **It never
+edits app code** — mounting the provider is yours, below.
 
 If you cannot run the scaffold, install both packages with the app's own
-package manager — `@revturbine/sdk` and `@revturbine/cli` — and mirror
-the scaffold's pins: the SDK on a caret range, the CLI exact
-(`--save-exact`, as a dev dependency). The CLI's *binary* is
+package manager — request `@revturbine/sdk@latest` and install
+`@revturbine/cli` exactly (`--save-exact`, as a dev dependency). Let the app's
+package-manager settings determine the SDK's saved exact/range declaration;
+neither syntax is an SDK freshness check. The CLI's *binary* is
 `revturbine`; the npm package `revturbine` is only the scaffold
 launcher, not the CLI.
 
@@ -366,6 +367,17 @@ with release-lifecycle.
 The other job this skill handles: a later session where RevTurbine is
 already integrated and the SDK or CLI needs updating. Skip this section
 entirely on a first install.
+
+Run `revturbine --version` from the app directory. CLI 0.19.1 and later
+check npm's latest stable SDK release and report SDK guidance on stderr,
+alongside the unchanged CLI/schema version on stdout. `revturbine init`
+also checks its target project. Use the reported concrete SDK version for
+the upgrade, preserving the app's exact/range convention. A caret range
+that allows the latest version can still have an older installed version;
+the CLI checks the installed SDK when available and labels a declaration
+fallback when it cannot resolve one. An unavailable check is not proof
+that the app is current. Existing dependencies are never upgraded by this
+advisory or by rerunning init.
 
 Update the package, then re-run the closed-loop test above **in the
 running app** — a version jump can change what the provider accepts, so
