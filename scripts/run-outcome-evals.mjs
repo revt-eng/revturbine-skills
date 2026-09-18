@@ -1,4 +1,3 @@
-// @revturbine-graph gref:2e674bf3a3a4b1d49ae0
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

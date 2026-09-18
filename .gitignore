@@ -5,4 +5,4 @@ eval-results/
 # Track graph metadata only; keep other local credentials/state ignored.
 !/.revturbine/
 /.revturbine/*
-!/.revturbine/graph-bindings.json
+!/.revturbine/bindings.json
