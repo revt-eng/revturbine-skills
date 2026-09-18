@@ -13,7 +13,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.40.0"
+  version: "0.41.0"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -82,21 +82,24 @@ provider's import (`localRuntime: { playbook }`).
 
 **Classify the backend too**, because revenue-critical checks are re-verified
 there. JavaScript or TypeScript uses the same `@revturbine/sdk` package through
-its headless entry in local runtime mode — the hosted `RevTurbineServer`
-provider is not released yet. Python uses `revturbine` (`pip install
-revturbine`; a distro-managed Python refuses that under PEP 668 — use a
-venv or `--break-system-packages`), where the check is `check_entitlement()`. Rust
-uses the `revturbine` crate — `https://revturbine.com/docs/getting-started/rust/`.
-All three evaluate the same Playbook with byte-identical decisions. **No
-other language has a server SDK, and there is no published HTTP API to
+its [headless entry](https://revturbine.com/docs/getting-started/server-side/)
+in local or hosted mode. `RevTurbineServer` issues client-session tokens;
+entitlement evaluation uses the headless SDK. Python uses the `revturbine`
+package in a [virtual environment](https://revturbine.com/docs/getting-started/python/)
+(including on PEP 668 distro-managed Python), where the check is
+`check_entitlement()`. Rust uses the
+[`revturbine` crate](https://revturbine.com/docs/getting-started/rust/).
+Python and Rust evaluate a supplied Playbook locally; the app refreshes that
+snapshot. All three share parity-checked decisions. **Other backend languages
+have no published server SDK, and there is no published HTTP API to
 substitute** — say so plainly, record server-side verification as an open
 gap rather than inventing a call, and offer to file it (see If you get
 stuck).
 
 The state sets the next move: **not installed** or **partially integrated** →
 invoke **`revturbine-integrate-sdk`** first (ends with the provider mounted, a
-user identified, and a Playbook resolving in local mode — no account, no
-network). From **locally integrated** on, route by the job your human asks for
+user identified, and a Playbook resolving in local mode — no account or
+decision traffic). From **locally integrated** on, route by the job your human asks for
 (below) — and if they haven't asked for anything specific, use the guided
 onboarding.
 
@@ -195,13 +198,31 @@ the output is `{ schema_version, schema }`, and the schema is under `schema`.
 
 ## Docs
 
-If you can fetch URLs, load **`https://revturbine.com/docs/llms-small.txt`**
-into context now — the abridged map of revturbine.com/docs (concepts, API
-reference, tutorials, components); use it to pull the specific page you need
-when you want depth. Its internal links are written site-relative and some
-omit the `/docs` prefix — if one 404s, retry it under
-`https://revturbine.com/docs/…`. If you can't fetch, no
-problem — these skills carry the standard flow.
+Fetch the specific public page needed for the current task. The
+[integration reference](https://revturbine.com/docs/#integration-reference)
+is a concise index; these are the usual destinations:
+
+| Need | Public reference |
+|---|---|
+| Provider readiness, `initStatus`, `colorScheme` | [React integration](https://revturbine.com/docs/getting-started/react/) |
+| Local/hosted modes, optional user/action/branding wiring, Playbook delivery | [Runtime modes](https://revturbine.com/docs/guides/runtime-modes/) and [configuration](https://revturbine.com/docs/reference/configuration/) |
+| Backend evaluation | [TypeScript / Node](https://revturbine.com/docs/getting-started/server-side/), [Python](https://revturbine.com/docs/getting-started/python/), [Rust](https://revturbine.com/docs/getting-started/rust/) |
+| Theme and paywall integration | [Theming](https://revturbine.com/docs/guides/theming/) and [paywall host](https://revturbine.com/docs/guides/paywall-host/) |
+| A placement that does not render | [Troubleshooting](https://revturbine.com/docs/guides/troubleshooting/) and [decision debugging](https://revturbine.com/docs/operate/debugging/) |
+| SDK version changes | [Public SDK changelog](https://github.com/revt-eng/revturbine-sdk/blob/main/CHANGELOG.md) |
+
+[`llms-small.txt`](https://revturbine.com/docs/llms-small.txt) is a long,
+abridged documentation bundle, including the language guides, rather than a
+page map. Use it when broader context is useful;
+[`llms-full.txt`](https://revturbine.com/docs/llms-full.txt) carries the full
+documentation. Bundle links may be site-relative and omit `/docs`; resolve
+those under `https://revturbine.com/docs/`. If fetching is unavailable, these
+skills carry the standard flow.
+
+This guidance is checked against **`@revturbine/sdk` 0.9.2**. On older
+integrations, inspect the installed version before applying a new API or
+assuming a release fix is present; route an upgrade to
+`revturbine-integrate-sdk`.
 
 ## Ground rules
 
@@ -242,4 +263,3 @@ the docs troubleshooting pages. If still stuck, ask your human — or offer to
 contact RevTurbine (email or Slack) and draft a concise issue (what you were
 doing, versions, the exact error — never tokens or secrets) to file on the
 RevTurbine SDK repo's issue tracker, linked from the docs.
-

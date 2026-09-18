@@ -1,7 +1,7 @@
 ---
 name: revturbine-verify-integration
 description: >
-  Audit a RevTurbine integration end-to-end and report findings — the
+  Audit a RevTurbine integration and report findings — the
   Playbook against the code that consumes it, revenue-critical actions
   against their server-side re-checks, authored behavior against what the
   app actually enables, and the app's baseline behavior when RevTurbine
@@ -10,9 +10,8 @@ description: >
   "verify the integration", "audit this", "check my setup", "is it safe to
   launch", after any SDK version or Playbook schema change, or whenever the
   app misbehaves — a gate that never locks, a placement that never shows, a
-  limit that never bites, events missing from analytics. Also the place that
-  says when a problem is RevTurbine's rather than yours and should be
-  reported instead of worked around. Skip if the job is making a known change: authoring the
+  limit that never bites, events missing from analytics. Also identifies
+  RevTurbine defects to report. Skip if making a known change: authoring the
   Playbook (revturbine-author-playbook), wiring the UI
   (revturbine-wire-monetization-surfaces), connecting Stripe
   (revturbine-connect-billing), or launching
@@ -21,7 +20,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.10.0"
+  version: "0.11.0"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -82,7 +81,11 @@ less reliable than asking it — `explainPlacementDecision()` for why any
 decision came out as it did, `getTargeting()` for the trait diff,
 `getUsage()` for unmapped usage keys, `getPolicy()` for the behavior
 flags, `getTelemetryCounters()` for failed event delivery. The appendix
-lists each probe and what it answers.
+lists each probe and what it answers. First read `initStatus`: if `ok` is
+`false`, report its phase, message and remediation. Otherwise wait for
+`isReady` and a non-null `sdk`; `ok` is also `true` during initialization.
+Use the app's actual mounted provider, so this checks the options and
+Playbook the app is running.
 
 Read decisions rather than infer them: every result carries a `reason` or
 `reasonCodes`, and `decisionSource: 'fallback'` means the answer was
@@ -97,23 +100,27 @@ sections 3–6 and 8 carry the detail for items 1–4; items 5 and 6 are
 self-contained. Report per group even when clean.
 
 1. **Money and wrong answers.** The production build actually runs in
-   hosted mode — **an app left in `local_only` (local mode) serves a frozen Playbook
-   and emits nothing, and nothing errors.** Usage, credit and seat keys
+   the intended runtime mode. **Local mode is production-capable** but uses
+   the bundled Playbook; hosted mode supplies dashboard-managed updates and
+   analytics. Confirm the app's deployment and refresh model match that choice.
+   Usage, credit and seat keys
    the app reports against the handles the rules limit — **a key that
    matches nothing is read as zero consumed, so the limit never bites.**
    The plan in the user context against the Playbook's plans — it must
    be `plan_handle: 'pro'` or `plan: { handle, name }`, matching the
    plan's `unique_handle`. **A missing or wrongly-keyed plan binds no
-   plan**, and on **SDK ≥ 0.4.0** the check then denies with
-   `reason: 'no_plan_identity'`. On **0.2.x it GRANTED instead** —
+   plan**, and current SDKs deny with `reason: 'no_plan_identity'`.
+   The public changelog records this fail-closed behavior from **0.3.0 in
+   TypeScript and 0.4.0 in Python/Rust**. On **0.2.x it GRANTED instead** —
    plan targeting was skipped rather than failed, so a mis-keyed plan
    handed every user the paid feature silently; `plan: { id, name }` was
    the correct shape there and stopped resolving in 0.3.0. Test a
    paid-only entitlement as a free user and require a denial — and if
    denials appear everywhere, read the `reason` before suspecting the
    Playbook: `no_plan_identity` means the plan never bound. Likewise the
-   user id: an empty or absent id mints a random anonymous UUID per
-   init, silently.
+   user id: an explicitly blank id logs an error and
+   falls back to an anonymous id; omitting `user` intentionally creates an
+   anonymous identity. Confirm signed-in checks use the app's stable id.
    Every revenue-critical action re-checked on the backend before
    value is granted, and a trial's paid cutoff anchored to server time
    rather than the client clock. The same user id space on client and
@@ -236,9 +243,11 @@ wrong.** Concretely, any one of these is enough:
   it reaches the SDK — you passed it, the value is what you think it is, and
   nothing downstream changes.
 - **Behavior changed across an SDK upgrade and the changelog does not
-  mention it.** `CHANGELOG.md` in the SDK repo records every breaking change
-  with the version it landed in and the version that made it fail closed. A
-  behavior change absent from it is either undocumented or unintended.
+  mention it.** Check the
+  [public SDK changelog](https://github.com/revt-eng/revturbine-sdk/blob/main/CHANGELOG.md)
+  for the installed and previous versions (also included in npm packages from
+  0.9.1). Its coverage is not proof that every historical change is recorded.
+  Report an unexplained behavior change with a reproduction and both versions.
 - **You have followed the remediation an error message gave you and the
   error is unchanged.** Read it from `initStatus` rather than the console —
   it is on the React context and is populated even when the SDK instance is
@@ -264,7 +273,10 @@ contains user data. Never include tokens or secrets.
 
 These probes need **`@revturbine/sdk` 0.8.0 or newer**. On an older version
 the first and last conditions are a manual comparison instead; the rest read
-the same.
+the same. Published development failure banners and theme warnings were fixed
+in **0.8.9**. On earlier 0.8.x releases, rely on the structured probe rather
+than an absent banner or warning; the probe is also available in production.
+The current skill guidance and package gate are verified against **0.9.2**.
 
 ## If you get stuck
 
@@ -333,10 +345,11 @@ of `--entitlement <handle>` or `--slot <id>`, plus `--plan-handle`.
 **Runtime mode in production.** Check what the production build actually
 initializes with, not what the docs say. An app shipped in `local_only`
 resolves against whatever Playbook was bundled at build time, so every
-config change after that deploy is invisible, and it emits no telemetry
-at all — no funnels, no caps, no attribution. Nothing errors; the app
-looks healthy. `getPolicy().runtimeMode` reports what the running
-instance believes. Check the production code path, not just local dev.
+config change after that deploy requires updating the bundled artifact.
+Local decisions and local caps still work; hosted analytics is separate.
+The optional anonymous install beacon is not hosted clickstream reporting.
+`getPolicy().runtimeMode` reports what the running instance believes. Check
+the production code path and the intended refresh strategy, not just local dev.
 
 **Trial cutoffs.** A trial's countdown and milestone nudges are derived
 locally and that is fine. The moment paid access **ends** must be
@@ -360,14 +373,13 @@ context feeds personalization tokens only. Threshold placements that
 never fire with correct-looking usage usually mean the rule defines no
 limit for that plan, or the plan handle is wrong.
 
-**Plan handle.** The two failure directions are opposite, which makes
-this confusing to diagnose: a **typo'd** plan handle matches no rule's
-plan targets, so **every entitlement denies**; an **absent** plan handle
-skips plan targeting entirely, so rules match on segments alone and
-entitlements can be **granted to a user with no plan**. Check
-`getTargeting().plan` and `explainPlacementDecision()` → `matchesPlan`.
-Plan targeting is explicit — a rule grants only the plans it names (the
-schema requires at least one target).
+**Plan handle.** Both mistakes fail closed in current SDKs, with different
+causes: an **absent** identity denies with `no_plan_identity`; a **typo'd**
+handle that matches no targeted plan denies through the rule path with
+`no_matching_entitlement_rule`. Check `getTargeting().plan` and
+`explainPlacementDecision()` → `matchesPlan`. The old skip-plan-targeting
+behavior belongs to the historical releases described in the audit above;
+do not use it to interpret a current SDK's result.
 
 **Server-side verification.** The client check is a UX hint; anything in
 the browser can be edited. Every action that costs your human money or
@@ -387,11 +399,11 @@ placement responses are matched to requests by position.
 **Identity.** The client and server must be talking about the same user,
 and nothing enforces it — a backend passing a database id while the
 browser identifies by email produces confident, unrelated answers on each
-side. Then the hygiene: a stable, non-guessable id (**never an email**),
-always app-supplied — there is no anonymous mode, and signed-out
-visitors are a roadmap item, so RevTurbine on a pre-signup surface is a
-finding. Empty-id rejection is specified but not built — confirm the app
-always supplies an id.
+side. For signed-in users supply a stable, non-guessable id (**never an
+email**). Omitting `user` deliberately uses an anonymous identity; do not
+mistake its caps or usage attribution for a signed-in user's. An explicitly
+blank id logs an error and falls back to an anonymous id rather than
+stopping the host app. Confirm the actual context with `getUserContext()`.
 
 **Keys.** The server secret belongs only on the backend; the browser
 carries the client-scoped key and the public ingest key. No key shape is
@@ -511,13 +523,13 @@ Playbook decides what that has to include. Derive the contract from the
 Playbook you are auditing rather than from a checklist: walk its
 **entitlement rules, placement triggers, qualifiers and segment
 definitions** — the four places that read user context — list the field
-each one needs, then confirm the app supplies every one. A user id and a
-plan are always required; everything else is conditional on what this
-Playbook uses.
+each one needs, then confirm the app supplies every one. For signed-in,
+plan-targeted checks, verify the stable user id and plan handle; the
+remaining context depends on what this Playbook uses.
 
 | Authored | The app must supply | If it doesn't |
 |---|---|---|
-| Any entitlement rule | The plan handle | Covered above: a typo denies everything, an absent handle grants on segments alone |
+| Any plan-targeted entitlement rule | The plan handle | An absent identity denies with `no_plan_identity`; an unmatched handle denies through the rule path |
 | A usage, credit or seat limit | That entitlement's balance, under its handle | Consumption reads as zero — the limit never bites |
 | A usage / credit / seat threshold trigger | The balance — the limit comes from the Playbook rule for the user's plan | No limit in the rule for that plan, and the placement never fires |
 | A trial trigger | The whole trial object — `in_trial`, `state`, `trial_limit_type`, `progress_percent`, plus `days_remaining` for a time-based trial | Every trial placement stays silent, and partial state kills the trial-ending trigger specifically |

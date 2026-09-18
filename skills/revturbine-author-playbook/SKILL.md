@@ -16,7 +16,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.16.0"
+  version: "0.17.0"
   safety_class: writes-config-draft
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -180,7 +180,8 @@ app builds its own options around the Playbook, so a file that validates
 is not yet a Playbook the running app is using. After any change to the
 Playbook's *shape* — a schema conversion, a moved or removed field, a new
 header block — prove it in the running app, not in a script that imports
-the file: `useRevTurbine().initStatus.ok` is `true`, one real placement
+the file: `useRevTurbine()` reports `initStatus.ok` and `isReady` as `true`
+with a non-null `sdk` (an `ok` status alone can still mean loading), one real placement
 renders, and `sdk.diagnoseSlotInventory()` reports nothing under
 `authoredButUnmounted` for the placements you touched (both 0.8.0+). Run
 that wherever the team already proves changes — a branch or preview
@@ -227,5 +228,7 @@ should be reported instead of worked around.
 
 Shape and syntax questions are answered by `revturbine schema` and
 `revturbine <cmd> --help`; the docs cover concepts
-(`https://revturbine.com/docs/llms-small.txt` is the page map). Otherwise follow `revturbine-start-here` →
+([integration reference](https://revturbine.com/docs/#integration-reference)
+is the concise index; `llms-small.txt` is an abridged documentation bundle).
+Otherwise follow `revturbine-start-here` →
 If you get stuck.
