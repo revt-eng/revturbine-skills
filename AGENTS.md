@@ -80,11 +80,24 @@ created under the operating system's temporary directory and are never tracked.
 
 ## Event graph source bindings
 
-Source annotations and `.revturbine/graph-bindings.json` link code to every
-citing graph node. Follow the [shared binding contract](https://github.com/revt-eng/revturbine-devkit/blob/main/docs/graphs/event-data/source-bindings.md)
-and devkit's event-graph query/audit/refresh skills (Codex and Claude).
-Before changing referenced code, locate its node IDs and trace its dependents.
-Move annotations with their targets; regenerate indexes after reference changes.
-From devkit run `pnpm graph bindings check --roots <absolute-checkout-map.json>`
-and `pnpm graph check`. JSON/generated/literal sidecars are intentional; keep
-historical refs pinned and use `bindings locate` for current local lines.
+Bindings are **one-way**: this repository's source is the authority, and devkit
+reads it. Nothing is installed or pinned here, no index lives here, and no
+command has to be run. Authoring the comment is the whole obligation. See the
+[shared binding contract](https://github.com/revt-eng/revturbine-devkit/blob/main/docs/graphs/event-data/source-bindings.md).
+
+Declare what a construct *is*, directly above it, naming the node:
+
+```ts
+// @revturbine-graph event:stripe:invoice.paid
+export function handleInvoicePaid(event: StripeEvent) {
+```
+
+Python uses `#`, Markdown an HTML comment, Mermaid `%%`. One identity per
+comment; every other node attaches by graph edge. A construct no comment can
+reach — strict JSON, a generated pipe, a migration — goes in the hand-authored
+`.revturbine/bindings.json`. **Never write a line number anywhere**: the binding
+is the symbol, so reformatting and moving code cannot break it.
+
+Renaming or deleting an annotated symbol *does* change the graph, so say so in
+the PR body. It will not fail this repository's gate; devkit's scheduled run
+catches it afterwards and names the commit.
