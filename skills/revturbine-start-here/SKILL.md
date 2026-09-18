@@ -13,7 +13,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.41.0"
+  version: "0.42.0"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -72,10 +72,13 @@ ambiguous** (signals conflict — diagnose before proceeding, and ask your human
 if it stays unclear).
 
 Check versions when compatibility is relevant: `revturbine --version` reports
-the CLI and its bundled schema snapshot, and commands that read from the
-server warn when the server's schema is newer — update the CLI pinned in the
-repo before authoring, and never claim feature compatibility on an old version
-without checking.
+the CLI and its bundled schema snapshot. From the app directory, CLI 0.19.1
+and later also check the latest stable published SDK and recommend a concrete
+upgrade when needed; this preserves the app's dependency declarations. An
+unavailable registry check does not establish that the SDK is current. Commands
+that read from the server separately warn when its schema is newer — update
+the CLI pinned in the repo before authoring, and never claim feature
+compatibility on an old version without checking.
 
 The local Playbook file has no fixed location — find it by following the
 provider's import (`localRuntime: { playbook }`).
