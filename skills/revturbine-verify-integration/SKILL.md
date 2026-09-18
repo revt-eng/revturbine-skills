@@ -523,9 +523,9 @@ Playbook decides what that has to include. Derive the contract from the
 Playbook you are auditing rather than from a checklist: walk its
 **entitlement rules, placement triggers, qualifiers and segment
 definitions** — the four places that read user context — list the field
-each one needs, then confirm the app supplies every one. A user id and a
-plan are always required; everything else is conditional on what this
-Playbook uses.
+each one needs, then confirm the app supplies every one. For signed-in,
+plan-targeted checks, verify the stable user id and plan handle; the
+remaining context depends on what this Playbook uses.
 
 | Authored | The app must supply | If it doesn't |
 |---|---|---|
