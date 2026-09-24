@@ -16,7 +16,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.4.1"
+  version: "0.4.2"
   safety_class: launches-live
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -83,9 +83,16 @@ mode has a Playbook to serve before the app depends on it.
    mint one scoped to the app's origin
    (`revturbine ingest-keys create --origin <app-origin>`). **The key
    is shown once and cannot be retrieved again** — have your human store
-   it immediately, then set it as the provider's `ingestPublicKey`.
-   Without it, gating works but the dashboard shows no funnels or
-   placement analytics — most of hosted mode's payoff.
+   it immediately, then set it as the provider's `publicKey`. This key
+   is meant to ship in the browser bundle — it is not a secret. On SDK
+   0.11.0 and later `publicKey` is the only browser option name; earlier
+   0.10.x releases also accept the deprecated aliases `ingestPublicKey`
+   and `apiKey`, with a development-only warning to switch to
+   `publicKey`. Never set this key as the *server* SDK's `apiKey` option
+   (`@revturbine/sdk/server`) — that is a different, secret key that
+   must never reach a browser. Without the browser key, gating works but
+   the dashboard shows no funnels or placement analytics — most of
+   hosted mode's payoff.
 
 Then prove the move held: the gate that worked locally behaves the same
 in hosted mode, and the app still renders its baseline UI when a placement
