@@ -1,0 +1,26 @@
+# Normalize line endings on checkin; check out LF everywhere (including
+# Windows) so a Windows worktree never re-introduces CRLF into a text file.
+# BL-0216 (follow-up to BL-0209, which normalized revturbine-web #857,
+# revturbine-scaffold #397, revturbine-sdk-internal #534, revturbine-devkit).
+* text=auto eol=lf
+
+# Windows batch/PowerShell scripts genuinely want CRLF. None are tracked
+# today, but keep the rule so one added later doesn't get flipped to LF.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets — never touched by line-ending normalization.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.wasm binary
