@@ -27,6 +27,8 @@ jobs:
           node-version: 22.13
           cache: npm
       - run: npm ci
+      - name: Line-ending check (BL-0216)
+        run: node scripts/check-line-endings.mjs --all
       - run: npm test
       - run: npm run check
       - name: Check external links
