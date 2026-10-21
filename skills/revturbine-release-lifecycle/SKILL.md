@@ -58,7 +58,7 @@ you never silently default it.
 
 Local mode can be used to rapidly prove the integration; hosted mode is
 the product promise — the Playbook changeable from the dashboard or CLI
-without redeploying. The move is four steps, in this order, so hosted
+without redeploying. The move is five steps, in this order, so hosted
 mode has a Playbook to serve before the app depends on it.
 
 1. **Connect the tenant.** Your human needs an account — created at
@@ -97,6 +97,20 @@ mode has a Playbook to serve before the app depends on it.
    the browser only through a client session: the app adds a server route
    that mints one and passes a `clientSession` callback, see
    [Client sessions](https://revturbine.com/docs/guides/client-sessions/).
+
+5. **Link Stripe customers to accounts.** Before real payers arrive, confirm
+   the app's own Stripe code sets `metadata.revturbine_account_id` and
+   `metadata.revturbine_user_id` on every customer it creates or updates
+   (and creates the customer before Checkout, passing `customer`). RevTurbine
+   never writes to Stripe, so an unlinked payer stays unattributed: missing
+   from cohort and retention figures. The `revturbine_*` keys are the primary
+   path; a plain `user_id` in Customer metadata is only a fallback stand-in
+   for the account identity, not a RevTurbine user id. Pass the same `account_id` to `identify`. Evidence that
+   points to two different accounts leaves the payer unlinked, and there is no
+   email match yet. See
+   [Link Stripe customers to accounts](https://revturbine.com/docs/guides/billing/#link-stripe-customers-to-accounts).
+   Flag it to your human as a gap if it is missing; the edit is app code
+   (`revturbine-integrate-sdk` owns it).
 
 Then prove the move held: the gate that worked locally behaves the same
 in hosted mode, and the app still renders its baseline UI when a placement

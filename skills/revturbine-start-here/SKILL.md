@@ -130,7 +130,13 @@ the next reload; in **hosted mode** edits flow `download` → edit → `validate
    brownfield migration, say so and work in reviewable batches.)
 3. **Connect billing** — Stripe, price mapping, and the billing events
    that flow back: **`revturbine-connect-billing`**. (Checkout itself is
-   the app's, wired in `revturbine-wire-monetization-surfaces`.)
+   the app's, wired in `revturbine-wire-monetization-surfaces`.) Payers only
+   join cohort, retention and attribution figures once the app links each
+   Stripe customer to an account: `metadata.revturbine_account_id` /
+   `revturbine_user_id` on the customer, set in the app's own Stripe calls
+   (RevTurbine never writes to Stripe), with the same `account_id`
+   given to `identify`; conflicting evidence leaves a payer unlinked — see **Link Stripe customers to accounts** in
+   `revturbine-integrate-sdk`.
 4. **Verify and launch** — audit the integration end-to-end with
    **`revturbine-verify-integration`** *(also useful any time something
    misbehaves)*, then launch through **`revturbine-release-lifecycle`** — the
