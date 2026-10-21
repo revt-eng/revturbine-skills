@@ -297,6 +297,32 @@ its `unique_handle`. The key name matters: a bare string
 with no bound plan **fails closed** — every plan-targeted rule misses
 and the check denies with `reason: 'no_plan_identity'`.
 
+### Link Stripe customers to accounts
+
+In hosted mode with Stripe connected, a payer is only attributable
+(cohorts, retention, "which prompt converted") once its Stripe customer is
+linked to one of the app's accounts. RevTurbine never writes to Stripe, so
+the link is code in the **app's own** Stripe calls, and you add it when you
+add the SDK, not later:
+
+- Pass the account and the email through the SDK, never the email as the id:
+  `sdk.identify(user.id, { email: user.email, account_id: user.accountId })`
+  (or `email` / `account_id` in `options.user`). `RevTurbineServer` has no
+  email setter; identify in the browser or headless client.
+- Wherever the app calls `stripe.customers.create` or `customers.update`, put
+  `metadata: { revturbine_account_id: <the account_id above>,
+  revturbine_user_id: <the user.id above> }`. Only these prefixed keys count:
+  a bare `user_id` / `account_id` key is ignored. Checkout cannot set
+  Customer metadata inline, so create the customer first and pass `customer`
+  to `checkout.sessions.create`, repeating the keys in `metadata` and
+  `subscription_data.metadata`.
+- RevTurbine links a payer on, in order: Customer metadata, an existing
+  customer link, a Checkout-created customer, an exact verified email.
+
+Ask the human before editing their Stripe code paths, and see
+[Link Stripe customers to accounts](https://revturbine.com/docs/guides/billing/#link-stripe-customers-to-accounts)
+for compiling examples.
+
 Verify by checking a paid-only entitlement as a free user and confirming
 a **denial**. If instead you see denials *everywhere*, including on plans
 that should be granted, read the `reason`: `no_plan_identity` means the
