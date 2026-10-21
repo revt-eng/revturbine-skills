@@ -88,11 +88,15 @@ mode has a Playbook to serve before the app depends on it.
    0.11.0 and later `publicKey` is the only browser option name; earlier
    0.10.x releases also accept the deprecated aliases `ingestPublicKey`
    and `apiKey`, with a development-only warning to switch to
-   `publicKey`. Never set this key as the *server* SDK's `apiKey` option
-   (`@revturbine/sdk/server`) — that is a different, secret key that
-   must never reach a browser. Without the browser key, gating works but
-   the dashboard shows no funnels or placement analytics — most of
-   hosted mode's payoff.
+   `publicKey`. Never set this key as the `apiKey` of `RevTurbineServer`
+   (from `@revturbine/sdk/headless`) — that is a different, secret server
+   key that must never reach a browser. Without the browser key the hosted
+   provider fetches no Playbook and every check denies
+   (`config_unavailable`), so mint it **before** dropping the
+   local-runtime options in step 3. Plan and trial state from Stripe reach
+   the browser only through a client session: the app adds a server route
+   that mints one and passes a `clientSession` callback, see
+   [Client sessions](https://revturbine.com/docs/guides/client-sessions/).
 
 Then prove the move held: the gate that worked locally behaves the same
 in hosted mode, and the app still renders its baseline UI when a placement

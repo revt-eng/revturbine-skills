@@ -261,13 +261,13 @@ separate:
 | Key | Init option | Lives where | Never |
 |---|---|---|---|
 | Public ingest key (from `revturbine ingest-keys create`) | `publicKey` on `RevTurbineProvider` / browser `initRevTurbine` | Shipped in the browser bundle, in app code | — it is meant to be public |
-| Server key (tenant API key) | `apiKey` on `@revturbine/sdk/server` (Node, Python, Rust) | Backend process only (env var, secrets manager) | In any browser bundle or client-side code |
+| Server key (tenant API key) | `apiKey` on `new RevTurbineServer({ tenantId, apiKey, endpoint })`, exported from `@revturbine/sdk/headless` (Node only; Python and Rust have no minting helper). `initRevTurbine` does not read it | Backend process only (env var, secrets manager) | In any browser bundle or client-side code |
 
 As of SDK **0.11.0**, `publicKey` is the only browser option name —
 the deprecated aliases `ingestPublicKey` and `apiKey` were removed from
 the browser entry points. On SDK 0.10.x both aliases still work on the
 browser but emit a development-only warning to switch to `publicKey`.
-The server SDK's `apiKey` is unrelated and unaffected by this rename.
+`RevTurbineServer`'s `apiKey` is unrelated and unaffected by this rename.
 
 ## Set the user context
 
