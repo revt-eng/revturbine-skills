@@ -52,7 +52,8 @@ launched (**hosted mode**). The Playbook contains:
 number of SDK components and calls: `rt.can("handle")` for UI state,
 `<Gate>` to protect an action, `<Slot>` / `usePlacement()` to render a
 placement, `rt.identify()` / `rt.track()` / `rt.update()` for identity,
-events, and usage, and `rtServer.can()` to verify on the backend.
+events, and usage, and a request-scoped headless `initRevTurbine(...)` then
+`rt.can()` to verify on the backend (there is no `rtServer` object).
 
 **The Playbook lifecycle**: author the file against `revturbine schema`
 (never from memory) and `validate` it. In **local mode** that's the whole
@@ -86,8 +87,11 @@ provider's import (`localRuntime: { playbook }`).
 **Classify the backend too**, because revenue-critical checks are re-verified
 there. JavaScript or TypeScript uses the same `@revturbine/sdk` package through
 its [headless entry](https://revturbine.com/docs/getting-started/server-side/)
-in local or hosted mode. `RevTurbineServer` issues client-session tokens;
-entitlement evaluation uses the headless SDK. Python uses the `revturbine`
+in local mode, built per request from a Playbook snapshot (`revturbine
+download --live` on deploy): hosted `Server` mode is a browser mode, because a
+Node process has no allowed origin to fetch the Playbook with.
+`RevTurbineServer` (from `@revturbine/sdk/headless`) holds the server key and
+issues client-session tokens; entitlement evaluation uses the headless SDK. Python uses the `revturbine`
 package in a [virtual environment](https://revturbine.com/docs/getting-started/python/)
 (including on PEP 668 distro-managed Python), where the check is
 `check_entitlement()`. Rust uses the

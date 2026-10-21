@@ -26,7 +26,8 @@ completeness.
    `revturbine` (`validate` / `launch` / `login` / `status`). Do not invent
    surface.
 3. **Thread the guardrails inline.** Additive-only fallback; client check is a
-   UX hint and revenue-critical entitlements are re-checked with `rtServer.can`;
+   UX hint and revenue-critical entitlements are re-checked on the backend with a
+   request-scoped headless `initRevTurbine(...)` and `rt.can` (there is no `rtServer`);
    config flows through the Playbook, never direct DB writes; hosted is the
    destination; confirm irreversible (launch/promote/Stripe) with a human.
 4. **Declare `safety_class` honestly** in frontmatter: `read-only-inspection`,
