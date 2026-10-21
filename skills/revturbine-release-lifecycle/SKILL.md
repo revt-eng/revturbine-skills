@@ -105,8 +105,9 @@ mode has a Playbook to serve before the app depends on it.
    never writes to Stripe, so an unlinked payer stays unattributed: missing
    from cohort and retention figures. The `revturbine_*` keys are the primary
    path; a plain `user_id` in Customer metadata is only a fallback stand-in
-   for the account identity, not a RevTurbine user id. The user's email goes through
-   `identify(user.id, { email, account_id })`, as a last-resort match. See
+   for the account identity, not a RevTurbine user id. Pass the same `account_id` to `identify`. Evidence that
+   points to two different accounts leaves the payer unlinked, and there is no
+   email match yet. See
    [Link Stripe customers to accounts](https://revturbine.com/docs/guides/billing/#link-stripe-customers-to-accounts).
    Flag it to your human as a gap if it is missing; the edit is app code
    (`revturbine-integrate-sdk` owns it).

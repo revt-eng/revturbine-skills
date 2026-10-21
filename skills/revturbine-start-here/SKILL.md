@@ -134,8 +134,8 @@ the next reload; in **hosted mode** edits flow `download` → edit → `validate
    join cohort, retention and attribution figures once the app links each
    Stripe customer to an account: `metadata.revturbine_account_id` /
    `revturbine_user_id` on the customer, set in the app's own Stripe calls
-   (RevTurbine never writes to Stripe), plus the user's email through
-   `identify` — see **Link Stripe customers to accounts** in
+   (RevTurbine never writes to Stripe), with the same `account_id`
+   given to `identify`; conflicting evidence leaves a payer unlinked — see **Link Stripe customers to accounts** in
    `revturbine-integrate-sdk`.
 4. **Verify and launch** — audit the integration end-to-end with
    **`revturbine-verify-integration`** *(also useful any time something

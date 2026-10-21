@@ -305,10 +305,11 @@ linked to one of the app's accounts. RevTurbine never writes to Stripe, so
 the link is code in the **app's own** Stripe calls, and you add it when you
 add the SDK, not later:
 
-- Pass the account and the email through the SDK, never the email as the id:
-  `sdk.identify(user.id, { email: user.email, account_id: user.accountId })`
-  (or `email` / `account_id` in `options.user`). `RevTurbineServer` has no
-  email setter; identify in the browser or headless client.
+- Pass the same `account_id` through the SDK that you put in the Stripe
+  metadata: `sdk.identify(user.id, { account_id: user.accountId })` (or
+  `account_id` in `options.user`). Never use an email as the id. Do not
+  promise an email match: no SDK call, and no `RevTurbineServer` method, writes
+  a user's email to RevTurbine yet, so there is nothing to match on.
 - Wherever the app calls `stripe.customers.create` or `customers.update`, put
   `metadata: { revturbine_account_id: <the account_id above>,
   revturbine_user_id: <the user.id above> }`. These are the primary path; a
@@ -318,9 +319,11 @@ add the SDK, not later:
   Customer metadata inline, so create the customer first and pass `customer`
   to `checkout.sessions.create`, repeating the keys in `metadata` and
   `subscription_data.metadata`.
-- RevTurbine links a payer on, in order: Customer metadata, an existing
-  customer link, a Checkout-created customer, an exact verified email; then,
-  as a fallback, plain `user_id` metadata as a stand-in account identity.
+- RevTurbine collects three pieces of evidence for a payer: Customer metadata,
+  an existing customer link, and a Checkout-created customer. If they agree
+  the payer is linked; if they point to two different accounts the payer is
+  left **unlinked**, so keep them consistent. Plain `user_id` metadata is only
+  a fallback stand-in for the account identity when none apply.
 
 Ask the human before editing their Stripe code paths, and see
 [Link Stripe customers to accounts](https://revturbine.com/docs/guides/billing/#link-stripe-customers-to-accounts)
