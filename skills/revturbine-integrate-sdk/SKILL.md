@@ -311,13 +311,16 @@ add the SDK, not later:
   email setter; identify in the browser or headless client.
 - Wherever the app calls `stripe.customers.create` or `customers.update`, put
   `metadata: { revturbine_account_id: <the account_id above>,
-  revturbine_user_id: <the user.id above> }`. Only these prefixed keys count:
-  a bare `user_id` / `account_id` key is ignored. Checkout cannot set
+  revturbine_user_id: <the user.id above> }`. These are the primary path; a
+  plain `user_id` in Customer metadata (as a billing layer such as Clerk writes
+  it) is only a fallback stand-in for the account identity when nothing else
+  applies, and is **not** a RevTurbine user id. Checkout cannot set
   Customer metadata inline, so create the customer first and pass `customer`
   to `checkout.sessions.create`, repeating the keys in `metadata` and
   `subscription_data.metadata`.
 - RevTurbine links a payer on, in order: Customer metadata, an existing
-  customer link, a Checkout-created customer, an exact verified email.
+  customer link, a Checkout-created customer, an exact verified email; then,
+  as a fallback, plain `user_id` metadata as a stand-in account identity.
 
 Ask the human before editing their Stripe code paths, and see
 [Link Stripe customers to accounts](https://revturbine.com/docs/guides/billing/#link-stripe-customers-to-accounts)
