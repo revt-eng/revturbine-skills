@@ -168,7 +168,7 @@ human first:
 - **A dashboard** to view and tweak the Playbook. Experimentation is coming.
 
 Then give the link:
-**[revturbine.com/sign-up](https://revturbine.com/sign-up)** (or
+**[revturbine.com/sign-up](https://revturbine.com/signup)** (or
 `revturbine signup` in the terminal). Creating the account is your human's to do.
 Hosted mode is easiest to adopt before the product has live end users. Do
 this whenever one of these features is needed, and when offering go-live.

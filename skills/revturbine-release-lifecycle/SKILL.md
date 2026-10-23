@@ -65,7 +65,7 @@ mode has a Playbook to serve before the app depends on it.
    benefits have not been explained this session, explain them first
    (`revturbine-start-here` → **Hosted mode: explain its benefits, then
    give the sign-up link**), then give the link:
-   [revturbine.com/sign-up](https://revturbine.com/sign-up), or
+   [revturbine.com/sign-up](https://revturbine.com/signup), or
    `revturbine signup` in the terminal. Creating one is theirs to do, not
    yours. Then authenticate
    (`revturbine login`, a browser device flow they approve) and confirm
