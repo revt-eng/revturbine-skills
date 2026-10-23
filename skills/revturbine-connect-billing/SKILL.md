@@ -133,12 +133,13 @@ improvise Stripe mechanics from memory.
 2. Confirm RevTurbine recorded it: the subscription change appears on
    that customer's record in the dashboard, with no app code in the
    path.
-3. Confirm the user's access flips with no app code: a gated feature
-   reads denied before the purchase and allowed after — the plan
-   arrived from billing, not from the app. **Re-mount or reload the
-   screen before reading the second result**: a gate already on screen
-   holds its previous answer, so testing without a reload shows a stale
-   "still denied" and sends you hunting a billing bug that isn't there.
+3. Confirm the user's access flips after fresh billing context reaches
+   the SDK: a gated feature reads denied before the purchase and allowed
+   after. Fetch the updated authoritative context and apply it to the SDK.
+   In SDK 0.12.4 the mounted gate re-evaluates on context notification;
+   remounting or reloading is not required. A webhook does not itself
+   mutate the browser's held context, so distinguish a missing context
+   refresh from a gate that failed to react.
 4. Fire a payment failure (a declining test card) and confirm the
    payment-attention signal turns on. Recovery clears it on the
    customer record; the SDK's held context does not clear itself
