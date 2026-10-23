@@ -121,6 +121,11 @@ self-contained. Report per group even when clean.
    user id: an explicitly blank id logs an error and
    falls back to an anonymous id; omitting `user` intentionally creates an
    anonymous identity. Confirm signed-in checks use the app's stable id.
+   In SDK 0.12.4, test signed-out → user A → sign-out → user B without
+   reloading. Use the SDK identity reset on sign-out and verify B does not
+   retain A's grants, usage, or account. Anonymous-to-identified transitions
+   retain applicable visitor state; an identified-user switch clears the
+   previous user's state. The application owns guest accounts and membership.
    Every revenue-critical action re-checked on the backend before
    value is granted, and a trial's paid cutoff anchored to server time
    rather than the client clock. The same user id space on client and
@@ -404,6 +409,12 @@ email**). Omitting `user` deliberately uses an anonymous identity; do not
 mistake its caps or usage attribution for a signed-in user's. An explicitly
 blank id logs an error and falls back to an anonymous id rather than
 stopping the host app. Confirm the actual context with `getUserContext()`.
+
+For an account switch by the same person, refresh all account-scoped facts,
+including balances and mirrored grants, and explicitly clear obsolete values.
+Changing only the account id can leave stale application facts. On a backend,
+create a fresh user-bound session per operation. Do not share one mutable SDK
+instance across simultaneous callers.
 
 **Keys.** The server secret belongs only on the backend; the browser
 carries the client-scoped key and the public ingest key. No key shape is

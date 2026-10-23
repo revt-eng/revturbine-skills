@@ -293,7 +293,7 @@ RevTurbine decides for a specific user and knows only what the app tells it.
 
 | Field | Required | Authoritative source | Notes |
 |---|---|---|---|
-| User id | Always | App | Stable, non-guessable, always app-supplied. **The SDK does not enforce this**: an empty id, or no user at all, mints a fresh random anonymous UUID per init with no warning — so resolve the user before mounting. Signed-out support is a roadmap item. `identify('')` is refused; init is not. Email-shaped ids warn |
+| User id | For signed-in users | App | Supply a stable internal id, never an email. Omit `user` intentionally for a signed-out visitor; the SDK uses anonymous identity. An explicitly blank id logs an error and falls back to anonymous identity, while `identify('')` is refused. Anonymous identity is not authentication or a paid grant; the app owns stable guest accounts and cross-device identity |
 | Plan | Yes, for now | RevTurbine, from billing | The app may also supply it to grant access instantly at upgrade |
 | Usage balances | If an entitlement meters it | **The app counts, resets and reports** — `period_scope` describes the intent, it does not roll the counter over; nothing resets it for you | Absolute balances, reported by the app |
 | Credit balances | If an entitlement uses credits | Customer counts, RevTurbine persists | Same model |

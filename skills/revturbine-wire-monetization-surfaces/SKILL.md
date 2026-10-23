@@ -253,21 +253,18 @@ fresh:
   plan change, a trait.
 - **Re-send before any screen that depends on a fact that can change
   elsewhere** — another device, a server job, a billing webhook.
-- **Mounted gates do not re-evaluate on their own.** `update()` changes
-  what the SDK decides, but a `<Gate>` already on screen keeps its last
-  answer until it remounts. So supply the current balances in the
-  provider's initial user context on any screen that gates on them, and
-  where a balance changes while that screen is open, drive the re-check
-  from the app — `useEntitlement().recheck()`, or remount the gated
-  subtree with a key. Verify with the just-over-limit test below rather
-  than assuming.
+- **Mounted gates react to SDK context and usage updates.** In SDK 0.12.4,
+  `update()` notifies the mounted gate and causes it to re-evaluate; a
+  forced remount or reload is unnecessary. Fetch fresh authoritative facts
+  when they change elsewhere, then pass them to the SDK. React state that
+  never reaches the SDK cannot change its decision. Verify a mounted gate
+  flips when usage crosses its limit, without changing its React key.
 
-**A stale or mis-keyed context over-grants, silently.** A metered
-entitlement with no reported balance reads as zero used, so the limit
-never bites; a plan under the wrong key means plan-targeted rules stop
-filtering and everything reads allowed. Neither warns. The backend
-re-check is what actually protects value — the client context is a
-display hint, and it fails in the generous direction.
+**A stale or mis-keyed context can misrepresent access.** A metered
+entitlement with no reported balance can read as zero used, so report the
+authoritative amount. A missing plan identity denies with `no_plan_identity`;
+it does not grant every plan-targeted feature. The backend re-check and
+atomic application accounting protect value; client context drives the UI.
 The usual cause is a typo'd key: the balance lands under a name no
 entitlement owns, and the real handle stays at zero. Report against the
 generated typed handles rather than string literals and that typo is a
