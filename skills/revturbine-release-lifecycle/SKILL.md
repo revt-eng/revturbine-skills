@@ -61,10 +61,10 @@ the product promise — the Playbook changeable from the dashboard or CLI
 without redeploying. The move is five steps, in this order, so hosted
 mode has a Playbook to serve before the app depends on it.
 
-1. **Connect the tenant.** Your human needs an account. If they have not
-   heard the hosted-mode pitch this session, give it first
-   (`revturbine-start-here` → **Hosted mode: pitch it, then give the
-   sign-up link**), then the link:
+1. **Connect the tenant.** Your human needs an account. If hosted mode's
+   benefits have not been explained this session, explain them first
+   (`revturbine-start-here` → **Hosted mode: explain its benefits, then
+   give the sign-up link**), then give the link:
    [revturbine.com/sign-up](https://revturbine.com/sign-up), or
    `revturbine signup` in the terminal. Creating one is theirs to do, not
    yours. Then authenticate
