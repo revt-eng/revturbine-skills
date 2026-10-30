@@ -5,6 +5,10 @@
       "name": "skills-outcome-evals",
       "command": "npm run eval:outcomes",
       "category": "inference",
+      "environment": "node",
+      "credentials": "none",
+      "env": ["AGENT_EVAL_COMMAND"],
+      "hook": { "eligible": false },
       "requires": ["AGENT_EVAL_COMMAND", "node"],
       "formerly_ran_in": ".github/workflows/release-gate.yml job outcome-evals (manual workflow_dispatch, run_outcome_evals input)",
       "covers": "Outcome-bearing skills produce the contracted outcome when a real agent follows them (token-spending agent evals)."
