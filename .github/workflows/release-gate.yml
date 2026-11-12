@@ -1,5 +1,16 @@
 name: Skills release gate
 
+# Check level L1 (EP-1747) through the shared check-level workflow on our
+# CodeBuild runners. This repository is public, so it calls the generated copy
+# in .github/workflows/ci-level.yml (never edit it here; the devkit regenerates
+# it), which owns the runner label and sends pull requests from forks to
+# GitHub-hosted runners. It installs with `npm ci`, then runs `npm run ci:l1`:
+# the line-ending check (BL-0216), the workflow guard (no LLM inference or
+# production credentials in Actions), `npm test` and `npm run check`. Every
+# event except a pull request then sweeps external links (`npm run check:links`,
+# which needs the network). Backlog reads "release-gate / l1" as this
+# repository's release evidence on push to main.
+
 on:
   pull_request:
   push:
@@ -13,21 +24,8 @@ permissions:
 
 jobs:
   release-gate:
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || format('codebuild-helm-ci-backlog-{0}-{1}', github.run_id, github.run_attempt) }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.13
-          cache: npm
-      - run: npm ci
-      - name: Line-ending check (BL-0216)
-        run: node scripts/check-line-endings.mjs --all
-      - name: Workflow guard (no LLM inference or production credentials in Actions)
-        run: node scripts/ci-guards.mjs
-      - run: npm test
-      - run: npm run check
-      - name: Check external links
-        if: github.event_name != 'pull_request'
-        run: npm run check:links
+    uses: ./.github/workflows/ci-level.yml
+    with:
+      level: l1
+      node-version: '22.13'
+      command: ${{ github.event_name == 'pull_request' && 'npm run ci:l1' || 'npm run ci:l1 && npm run check:links' }}
