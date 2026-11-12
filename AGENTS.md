@@ -64,7 +64,9 @@ right grouping.
 Run `npm ci && npm test && npm run check` before every change. The gate derives
 the command and SDK inventories from the pinned public packages; do not commit
 generated inventories or fixture applications. `npm run check:links` adds the
-network-dependent URL sweep used by the nightly workflow.
+network-dependent URL sweep used by the nightly workflow. `npm run ci:l1` runs
+exactly what the `release-gate` check runs on a pull request (EP-1747 check level
+L1); other events add `npm run check:links`.
 
 Every new skill must be added to `skills.sh.json` and
 `evals/trigger-fixtures.json`. If it writes testable output, also add its
