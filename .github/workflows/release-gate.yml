@@ -24,7 +24,7 @@ jobs:
       - run: npm ci
       - name: Line-ending check (BL-0216)
         run: node scripts/check-line-endings.mjs --all
-      - name: Workflow guard (no inference or infrastructure steps in Actions)
+      - name: Workflow guard (no LLM inference or production credentials in Actions)
         run: node scripts/ci-guards.mjs
       - run: npm test
       - run: npm run check
