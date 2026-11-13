@@ -1,7 +1,7 @@
 name: Release pin
 
-# EP-1747 phase 5: pin revt-eng packages to an exact version on a Release branch
-# and commit the manifest and lockfile change. Backlog dispatches it when a
+# EP-1747 phase 5: pin revt-eng packages to a version on a Release branch and
+# commit the manifest and lockfile change. Backlog dispatches it when a
 # producer in the same Release publishes a prerelease, and at the merge walk with
 # the final version, because it cannot regenerate a lockfile over REST.
 #   package  name@exact-version. Several, separated by spaces, move together in
@@ -10,11 +10,15 @@ name: Release pin
 #            checked out.
 # scripts/release-pin.mjs refuses anything but a revt-eng package (@revt-eng/*,
 # @revturbine/cli, @revturbine/sdk, create-revturbine, revturbine) at an exact
-# version, a prerelease from another Release, and a package this repository does
-# not already depend on. It runs the package manager's exact add, with no
-# lifecycle scripts, in every directory whose package.json depends on the
-# package, and the job commits "Pin <pkg>@<ver> for RL-<n>" with its own token.
-# A pin that is already in place commits nothing.
+# version, a prerelease from another Release, an earlier build of this Release
+# than the one already pinned, and a package this repository does not already
+# depend on. It runs the package manager's exact add, with no lifecycle scripts,
+# in every directory whose package.json depends on the package. A prerelease, or
+# a release where the manifest was exact, is pinned exactly; a release where the
+# manifest held a range keeps the range's form and upper bound with the version
+# as its lower bound (">=0.12.5 <1" pinned to 0.13.0 becomes ">=0.13.0 <1"). The
+# job commits "Pin <pkg>@<ver> for RL-<n>" with its own token. A pin that is
+# already in place commits nothing.
 #
 # Dispatch it on the default branch, so its reviewed copy runs; the job checks the
 # Release branch out itself:
@@ -44,7 +48,6 @@ on:
 
 permissions:
   contents: write # the pin commit
-  packages: read # @revt-eng/* from GitHub Packages
 
 jobs:
   pin:
@@ -79,11 +82,10 @@ jobs:
           ref: refs/heads/${{ inputs.branch }}
           path: work
 
+      # Every dependency here comes from the public npm registry, so no GitHub Packages access.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://npm.pkg.github.com
-          scope: '@revt-eng'
 
       - name: Install the package manager the branch declares
         working-directory: work
@@ -96,7 +98,6 @@ jobs:
         id: pin
         working-directory: work
         env:
-          NODE_AUTH_TOKEN: ${{ github.token }}
           HUSKY: '0'
         run: |
           set -euo pipefail

@@ -1,5 +1,5 @@
 // Tests for scripts/release-pin.mjs (EP-1747 phase 5): input validation, where
-// each manifest takes its pin, and what the commit may contain.
+// each manifest takes its pin, ranges, never moving back, and what the commit may contain.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -9,10 +9,12 @@ import test from 'node:test';
 import {
   addCommand,
   apply,
+  backwardsRefusal,
   commitMessage,
   dependencyField,
   ownerOf,
   parsePins,
+  pinnedSpec,
   releaseFromBranch,
   workspacePackages,
 } from '../scripts/release-pin.mjs';
@@ -161,4 +163,56 @@ test('a manifest that already pins the version is left alone', () => {
   const result = apply({ root, pins: parsePins('@revturbine/cli@0.21.20', 7), release: 'RL-7', run: fakeAdd(root, calls) });
   assert.deepEqual(calls, []);
   assert.deepEqual(result.files, []);
+});
+
+test("a prerelease pins exactly; a release keeps a range's form and upper bound and raises its lower bound", () => {
+  assert.equal(pinnedSpec('>=0.12.5 <1', '0.13.0-rl.7.4'), '0.13.0-rl.7.4');
+  assert.equal(pinnedSpec('0.12.5', '0.13.0'), '0.13.0', 'an exact specifier stays exact');
+  assert.equal(pinnedSpec('>=0.12.5 <1', '0.13.0'), '>=0.13.0 <1');
+  assert.equal(pinnedSpec('>=0.11.0  <1', '0.17.1'), '>=0.17.1  <1', 'spacing is kept');
+  assert.equal(pinnedSpec('^0.12.5', '0.13.0'), '^0.13.0');
+  assert.equal(pinnedSpec('~1.2.3', '1.2.9'), '~1.2.9');
+  assert.equal(pinnedSpec('>1.0.0 <=2.0.0', '1.0.5'), '>=1.0.5 <=2.0.0');
+  assert.equal(pinnedSpec('1.0.0 - 2.0.0', '1.5.0'), '1.5.0 - 2.0.0');
+  const refused = {
+    '>=0.12.5 <1': ['1.0.0', /upper bound <1 excludes it/],
+    '>=0.13.0 <1': ['0.12.9', /below its lower bound 0\.13\.0/],
+    '^1.0.0 || ^2.0.0': ['2.1.0', /union/],
+    '*': ['1.0.0', /not a comparator/],
+    '1.x': ['1.2.0', /not a comparator/],
+    '<1': ['0.5.0', /no lower bound/],
+    '>=1.0.0 >=1.1.0': ['1.2.0', /more than one lower bound/],
+  };
+  for (const [range, [version, error]] of Object.entries(refused)) assert.throws(() => pinnedSpec(range, version), error, range);
+});
+
+test('a pin never moves a manifest back to an earlier build of the same Release', () => {
+  assert.match(backwardsRefusal('0.1.562-rl.7.41', '0.1.562-rl.7.40', 7, 'x'), /back from 0\.1\.562-rl\.7\.41 to 0\.1\.562-rl\.7\.40: .* later build of RL-7/);
+  assert.equal(backwardsRefusal('0.1.562-rl.7.39', '0.1.562-rl.7.40', 7, 'x'), null);
+  assert.equal(backwardsRefusal('0.1.562-rl.6.90', '0.1.562-rl.7.1', 7, 'x'), null, "another Release's build is not compared");
+  assert.equal(backwardsRefusal('0.1.561', '0.1.562-rl.7.1', 7, 'x'), null);
+
+  const root = repo({ 'package.json': { name: 'root', dependencies: { '@revt-eng/schema': '0.1.562-rl.7.41' } }, 'package-lock.json': '{}' });
+  const calls = [];
+  assert.throws(() => apply({ root, pins: parsePins('@revt-eng/schema@0.1.562-rl.7.40', 7), release: 'RL-7', run: fakeAdd(root, calls) }), /refusing to pin @revt-eng\/schema in package\.json back from 0\.1\.562-rl\.7\.41/);
+  assert.deepEqual(calls, [], 'nothing ran');
+});
+
+test('a release pinned over a range: the exact add resolves it, then the raised range is written back with a lockfile-only install', () => {
+  const root = repo({
+    'package.json': { name: 'root', dependencies: { '@revturbine/sdk': '>=0.12.5 <1' }, devDependencies: { '@revt-eng/core': '0.1.561' } },
+    'package-lock.json': '{}',
+  });
+  const calls = [];
+  const result = apply({ root, pins: parsePins('@revturbine/sdk@0.17.1 @revt-eng/core@0.1.562', 7), release: 'RL-7', run: fakeAdd(root, calls) });
+  assert.deepEqual(calls, [
+    ['.', 'npm', 'install', '--save-exact', '--ignore-scripts', '--save-prod', '@revturbine/sdk@0.17.1'],
+    ['.', 'npm', 'install', '--save-exact', '--ignore-scripts', '--save-dev', '@revt-eng/core@0.1.562'],
+    ['.', 'npm', 'install', '--package-lock-only', '--ignore-scripts'],
+  ]);
+  const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+  assert.equal(manifest.dependencies['@revturbine/sdk'], '>=0.17.1 <1');
+  assert.equal(manifest.devDependencies['@revt-eng/core'], '0.1.562');
+  assert.deepEqual(result.files, ['package-lock.json', 'package.json']);
+  assert.deepEqual(apply({ root, pins: parsePins('@revturbine/sdk@0.17.1', 7), release: 'RL-7', run: fakeAdd(root, []) }).files.length, 2, 'already pinned: nothing more runs');
 });
