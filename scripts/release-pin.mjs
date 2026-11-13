@@ -16,9 +16,15 @@
 //            - a release where the manifest held a range: the same range with
 //              the version as its lower bound, e.g. ">=0.12.5 <1" pinned to
 //              0.13.0 becomes ">=0.13.0 <1"; the lockfile resolves the version.
-//          A pin never moves back: a prerelease of this Release lower than the
-//          build already pinned is refused, and so is a release below a range's
-//          lower bound. A directory with its own lockfile, or a member of a pnpm
+//          A prerelease pinned over a range records the range in
+//          .release-pins.json at the root of the Release branch, so the final
+//          version, pinned at the merge walk, gets the range back (and the record
+//          is removed; the file goes when it is empty). A pin never moves back:
+//          two builds of this Release compare by build number <k> (a reverted
+//          version bump makes a newer build's version lower), anything else by
+//          semver, and a release below a range's lower bound is refused. After
+//          the package manager runs, the lockfile must resolve exactly the pinned
+//          version. A directory with its own lockfile, or a member of a pnpm
 //          workspace, gets the package manager's exact add (then, for a range, a
 //          lockfile-only install after the range is written back); a manifest no
 //          lockfile covers gets its specifier set. Lifecycle scripts never run.
@@ -34,7 +40,7 @@
 //   node scripts/release-pin.mjs apply --branch release/RL-<n> --packages "<name>@<version> ..." [--dir <checkout>] [--out <file>]
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -48,6 +54,8 @@ const EXACT = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z
 const PARTIAL = /^v?(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?(?:\.(0|[1-9][0-9]*))?(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 const FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 const PINNABLE_FILES = new Set(['package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']);
+/** Ranges replaced by a prerelease pin, by manifest and package, so the final pin can restore them. */
+export const PINS_FILE = '.release-pins.json';
 
 export function releaseFromBranch(branch) {
   const match = RELEASE_BRANCH.exec(String(branch ?? ''));
@@ -160,12 +168,80 @@ export function pinnedSpec(current, version) {
   return raiseLowerBound(current, version);
 }
 
-/** Why a pin would move a manifest back, or null: a prerelease of this Release below the build already pinned. */
+/** The Release build a version is: <x.y.z>-rl.<n>.<k> -> { n, k }, else null. */
+export function releaseBuild(version) {
+  const match = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rl\.([1-9][0-9]*)\.([1-9][0-9]*)$/.exec(String(version ?? ''));
+  return match ? { n: Number(match[4]), k: Number(match[5]) } : null;
+}
+
+/**
+ * Why a pin would move an exact specifier back, or null. Two builds of one
+ * Release compare by build number <k>: a reverted version bump makes a newer
+ * build's version lower, so semver would call it older. Anything else (another
+ * Release, a prerelease against a release, two releases) compares by semver.
+ * A range is not compared here: raiseLowerBound refuses lowering it.
+ */
 export function backwardsRefusal(current, version, n, where) {
-  const sameRelease = new RegExp(`-rl\\.${n}\\.[1-9][0-9]*$`);
-  if (!isPrerelease(version) || !EXACT.test(String(current ?? '')) || !sameRelease.test(current)) return null;
+  if (!EXACT.test(String(current ?? '')) || current === version) return null;
+  const was = releaseBuild(current);
+  const now = releaseBuild(version);
+  if (was && now && was.n === now.n) {
+    if (now.k >= was.k) return null;
+    return `refusing to pin ${where} back from ${current} to ${version}: build ${was.k} of RL-${was.n} is later than build ${now.k}, and a pin never moves back`;
+  }
   if (compareSemver(version, current) >= 0) return null;
-  return `refusing to pin ${where} back from ${current} to ${version}: ${current} is a later build of RL-${n}, and a pin never moves back`;
+  return `refusing to pin ${where} back from ${current} to ${version}: ${current} is later, and a pin never moves back`;
+}
+
+/** The ranges recorded on this branch: { "<dir>/package.json": { "<package>": "<range>" } }. */
+export function readPinRecords(root) {
+  const file = path.join(root, PINS_FILE);
+  if (!existsSync(file)) return {};
+  const records = JSON.parse(readFileSync(file, 'utf8'));
+  if (!records || typeof records !== 'object' || Array.isArray(records)) throw new Error(`${PINS_FILE} is not an object`);
+  return records;
+}
+
+/**
+ * What a pin writes, and what it records. A prerelease over a range writes the
+ * version and records the range (unless one is recorded already); a release
+ * restores a recorded range, or keeps the manifest's own, with the version as its
+ * lower bound, and drops the record; an exact specifier stays exact.
+ */
+export function planPin(current, version, recorded) {
+  if (isPrerelease(version)) {
+    const range = recorded ?? (EXACT.test(String(current ?? '').trim()) ? undefined : current);
+    return { spec: version, record: range };
+  }
+  const base = recorded ?? current;
+  return { spec: pinnedSpec(base, version), record: undefined };
+}
+
+/** The version a lockfile resolves for a dependency of one importer, or null. */
+export function lockedVersion(lock, name) {
+  if (lock.pm === 'npm') {
+    const data = JSON.parse(lock.text);
+    return data.packages?.[`node_modules/${name}`]?.version ?? data.dependencies?.[name]?.version ?? null;
+  }
+  // pnpm-lock.yaml (v9): importers: / <importer>: / <field>: / <name>: / version: <v>(peers)
+  const lines = lock.text.split(/\r?\n/);
+  const unquote = (value) => value.trim().replace(/^['"]|['"]$/g, '');
+  let i = lines.findIndex((line) => /^importers:\s*$/.test(line));
+  if (i < 0) return null;
+  for (i += 1; i < lines.length && !/^\S/.test(lines[i]); i += 1) {
+    const importer = /^ {2}(\S.*?):\s*$/.exec(lines[i]);
+    if (!importer || unquote(importer[1]) !== lock.importer) continue;
+    for (let j = i + 1; j < lines.length && !/^ {0,2}\S/.test(lines[j]); j += 1) {
+      const dep = /^ {6}(\S.*?):\s*$/.exec(lines[j]);
+      if (!dep || unquote(dep[1]) !== name) continue;
+      for (let m = j + 1; m < lines.length && /^ {8}/.test(lines[m]); m += 1) {
+        const version = /^ {8}version:\s*(.+)$/.exec(lines[m]);
+        if (version) return unquote(version[1]).replace(/\(.*$/, '');
+      }
+    }
+    return null;
+  }
+  return null;
 }
 
 /** Set one dependency's specifier in a package.json, keeping its indentation. */
@@ -220,15 +296,18 @@ function matchesWorkspace(relative, globs) {
 /** How a manifest directory takes the pin: its own pnpm or npm lockfile, a pnpm workspace member, or none. */
 export function ownerOf(root, dir) {
   const abs = path.join(root, dir);
-  if (existsSync(path.join(abs, 'pnpm-lock.yaml'))) return { pm: 'pnpm', workspaceRoot: existsSync(path.join(abs, 'pnpm-workspace.yaml')) };
-  if (existsSync(path.join(abs, 'package-lock.json')) || existsSync(path.join(abs, 'npm-shrinkwrap.json'))) return { pm: 'npm' };
+  if (existsSync(path.join(abs, 'pnpm-lock.yaml'))) return { pm: 'pnpm', workspaceRoot: existsSync(path.join(abs, 'pnpm-workspace.yaml')), lock: path.posix.join(dir, 'pnpm-lock.yaml'), importer: '.' };
+  if (existsSync(path.join(abs, 'npm-shrinkwrap.json'))) return { pm: 'npm', lock: path.posix.join(dir, 'npm-shrinkwrap.json'), importer: '.' };
+  if (existsSync(path.join(abs, 'package-lock.json'))) return { pm: 'npm', lock: path.posix.join(dir, 'package-lock.json'), importer: '.' };
   let parent = dir;
   while (parent !== '.') {
     parent = path.posix.dirname(parent);
     const workspace = path.join(root, parent, 'pnpm-workspace.yaml');
     if (existsSync(workspace) && existsSync(path.join(root, parent, 'pnpm-lock.yaml'))) {
       const relative = path.posix.relative(parent === '.' ? '' : parent, dir);
-      if (matchesWorkspace(relative, workspacePackages(readFileSync(workspace, 'utf8')))) return { pm: 'pnpm', workspaceRoot: false };
+      if (matchesWorkspace(relative, workspacePackages(readFileSync(workspace, 'utf8')))) {
+        return { pm: 'pnpm', workspaceRoot: false, lock: path.posix.join(parent, 'pnpm-lock.yaml'), importer: relative };
+      }
     }
   }
   return { pm: null };
@@ -266,6 +345,8 @@ export function trackedManifests(root) {
 /** Pin every package in the checkout at `root` (see the header). */
 export function apply({ root, pins, release, run = spawnSync }) {
   const { n } = releaseFromBranch(`release/${release}`);
+  const records = readPinRecords(root);
+  const recordsBefore = JSON.stringify(records);
   const targets = new Map();
   const found = new Set();
   for (const file of trackedManifests(root)) {
@@ -279,7 +360,14 @@ export function apply({ root, pins, release, run = spawnSync }) {
       const current = manifest[field][pin.name];
       const backwards = backwardsRefusal(current, pin.version, n, `${pin.name} in ${dir === '.' ? '' : `${dir}/`}package.json`);
       if (backwards) throw new Error(backwards);
-      targets.get(dir).push({ ...pin, field, current, spec: pinnedSpec(current, pin.version) });
+      const { spec, record } = planPin(current, pin.version, records[file]?.[pin.name]);
+      if (record === undefined) {
+        if (records[file]) delete records[file][pin.name];
+        if (records[file] && !Object.keys(records[file]).length) delete records[file];
+      } else {
+        records[file] = { ...records[file], [pin.name]: record };
+      }
+      targets.get(dir).push({ ...pin, field, current, spec });
     }
   }
   const missing = pins.filter((pin) => !found.has(pin.name));
@@ -312,6 +400,18 @@ export function apply({ root, pins, release, run = spawnSync }) {
       for (const entry of ranged) setSpecifier(file, entry.field, entry.name, entry.spec);
       exec(dir, lockfileCommand(owner));
     }
+    const lock = { pm: owner.pm, importer: owner.importer, text: readFileSync(path.join(root, owner.lock), 'utf8') };
+    for (const entry of pending) {
+      const locked = lockedVersion(lock, entry.name);
+      if (locked !== entry.version) throw new Error(`${owner.lock} resolves ${entry.name} to ${locked ?? 'nothing'} for ${dir}, not the pinned ${entry.version}`);
+    }
+  }
+
+  const pinsFile = path.join(root, PINS_FILE);
+  const recordsChanged = JSON.stringify(records) !== recordsBefore;
+  if (recordsChanged) {
+    if (Object.keys(records).length) writeFileSync(pinsFile, `${JSON.stringify(records, null, 2)}\n`);
+    else if (existsSync(pinsFile)) rmSync(pinsFile);
   }
 
   for (const [dir, entries] of targets) {
@@ -322,15 +422,18 @@ export function apply({ root, pins, release, run = spawnSync }) {
     }
   }
 
-  const changed = [];
+  const changed = new Set();
   const unexpected = [];
   const status = git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=no']);
   for (const record of status.split('\0').filter(Boolean)) {
     const file = record.slice(3);
-    (PINNABLE_FILES.has(path.posix.basename(file)) ? changed : unexpected).push(file);
+    if (PINNABLE_FILES.has(path.posix.basename(file)) || file === PINS_FILE) changed.add(file);
+    else unexpected.push(file);
   }
   if (unexpected.length) throw new Error(`the pin changed files outside manifests and lockfiles: ${unexpected.join(', ')}`);
-  return { release, pins, files: changed.sort(), message: commitMessage(pins, release) };
+  // A new .release-pins.json is untracked, so status does not list it.
+  if (recordsChanged && existsSync(pinsFile)) changed.add(PINS_FILE);
+  return { release, pins, files: [...changed].sort(), message: commitMessage(pins, release) };
 }
 
 function parseArgs(argv) {

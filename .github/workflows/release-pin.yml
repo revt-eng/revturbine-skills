@@ -18,7 +18,10 @@ name: Release pin
 # manifest held a range keeps the range's form and upper bound with the version
 # as its lower bound (">=0.12.5 <1" pinned to 0.13.0 becomes ">=0.13.0 <1"). The
 # job commits "Pin <pkg>@<ver> for RL-<n>" with its own token. A pin that is
-# already in place commits nothing.
+# already in place commits nothing. A prerelease pinned over a range records the
+# range in .release-pins.json on the branch (committed with the pin), so the
+# final pin restores it; a pin never moves back (within a Release by build
+# number), and the lockfile must resolve exactly the pinned version.
 #
 # Dispatch it on the default branch, so its reviewed copy runs; the job checks the
 # Release branch out itself:
