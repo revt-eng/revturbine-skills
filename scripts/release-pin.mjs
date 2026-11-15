@@ -48,7 +48,10 @@
 //          and pnpm-workspace.yaml change only for the pinned packages, and that
 //          the pins are the ones it was given. It then writes the commit with git
 //          plumbing (no checkout, no hooks) and prints {"sha":...}. Author and
-//          committer come from GIT_AUTHOR_* / GIT_COMMITTER_*.
+//          committer come from GIT_AUTHOR_* / GIT_COMMITTER_*. Lockfile entries are
+//          checked against the registry; if a pinned package's registry entry
+//          cannot be read it commits nothing and exits 75, so the workflow
+//          tries again on its next attempt.
 //
 // Identical copies live in every repository with release-pin.yml; change them
 // together.
@@ -542,32 +545,20 @@ export function workspacePinRefusal(file, beforeText, afterText, pins) {
   return stray === undefined ? null : `${file} changes a line that names no pinned package: ${stray.trim()}`;
 }
 
-const INTEGRITY = /^sha512-[A-Za-z0-9+/]+={0,2}$/;
 const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-/** Where a pinned package's tarball must come from when its registry entry cannot be read: GitHub Packages or npm. */
-export function tarballPattern(name, version) {
-  if (SCOPED.test(name)) return new RegExp(`^https://npm\\.pkg\\.github\\.com/download/${escapeRe(name)}/${escapeRe(version)}/[0-9a-f]+$`);
-  const base = name.split('/').at(-1);
-  return new RegExp(`^https://registry\\.npmjs\\.org/${escapeRe(name)}/-/${escapeRe(base)}-${escapeRe(version)}\\.tgz$`);
-}
 
 /**
  * Refusal unless a lockfile entry's integrity (and tarball, when the lockfile names one) is the registry's for
- * name@version; `registry` maps name -> { [version]: { integrity, tarball } } and lacks a name it could not read,
- * in which case the formats are checked instead.
+ * name@version; `registry` maps name -> { [version]: { integrity, tarball } }. Without the package's registry entry
+ * nothing is accepted (the commit command stops the attempt before it gets here when a read fails).
  */
 export function resolutionRefusal(where, name, version, integrity, tarball, registry) {
   const known = registry?.get(name);
-  if (known) {
-    const dist = known[version];
-    if (!dist) return `${where}: the registry has no ${name}@${version}`;
-    if (integrity !== dist.integrity) return `${where}: the integrity of ${name}@${version} differs from the registry's`;
-    if (tarball !== undefined && tarball !== dist.tarball) return `${where}: ${name}@${version} resolves from ${tarball}, not the registry's ${dist.tarball}`;
-    return null;
-  }
-  if (typeof integrity !== 'string' || !INTEGRITY.test(integrity)) return `${where}: ${name}@${version} has no sha512 integrity`;
-  if (tarball !== undefined && !tarballPattern(name, version).test(tarball)) return `${where}: ${name}@${version} resolves from ${tarball}, not its registry`;
+  if (!known) return `${where}: ${name}'s registry entry could not be read, so ${name}@${version} cannot be checked`;
+  const dist = known[version];
+  if (!dist) return `${where}: the registry has no ${name}@${version}`;
+  if (integrity !== dist.integrity) return `${where}: the integrity of ${name}@${version} differs from the registry's`;
+  if (tarball !== undefined && tarball !== dist.tarball) return `${where}: ${name}@${version} resolves from ${tarball}, not the registry's ${dist.tarball}`;
   return null;
 }
 
@@ -797,10 +788,13 @@ function parseArgs(argv) {
   return options;
 }
 
+/** A registry entry the push job could not read: the attempt stops and the next one tries again (exit 75). */
+export class RegistryUnavailable extends Error {}
+
 /**
  * The registry entries of the pinned packages, name -> { [version]: { integrity, tarball } }: GitHub Packages for
- * @revt-eng/* (REGISTRY_TOKEN, packages: read), npm for the rest. A name it cannot read is left out (with a warning),
- * so the lockfile check falls back to the formats.
+ * @revt-eng/* (REGISTRY_TOKEN, packages: read), npm for the rest. Fails closed: an entry it cannot read throws
+ * RegistryUnavailable.
  */
 export async function readRegistry(pins, { token = process.env.REGISTRY_TOKEN, fetchImpl = fetch } = {}) {
   const registry = new Map();
@@ -816,7 +810,7 @@ export async function readRegistry(pins, { token = process.env.REGISTRY_TOKEN, f
       for (const [version, entry] of Object.entries(packument.versions ?? {})) versions[version] = { integrity: entry?.dist?.integrity, tarball: entry?.dist?.tarball };
       registry.set(name, versions);
     } catch (error) {
-      console.error(`::warning::release-pin: could not read ${name} from its registry (${error.message}); checking lockfile formats instead`);
+      throw new RegistryUnavailable(`could not read ${name} from its registry (${error.message})`);
     }
   }
   return registry;
@@ -845,7 +839,14 @@ async function main(argv) {
       if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
       return result.stdout;
     };
-    const registry = await readRegistry(pins);
+    let registry;
+    try {
+      registry = await readRegistry(pins);
+    } catch (error) {
+      if (!(error instanceof RegistryUnavailable)) throw error;
+      console.error(`::warning::release-pin: ${error.message}; nothing is committed, and the next attempt tries again.`);
+      process.exit(75);
+    }
     process.stdout.write(`${JSON.stringify(commitBundle({ bundle: path.resolve(options.bundle), tip: options.tip, pins, release, n, git, registry }))}\n`);
     return;
   }

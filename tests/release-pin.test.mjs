@@ -380,7 +380,8 @@ test('the push job commits a checked bundle on the head it was pinned on, and no
   const bundle = path.join(work, 'bundle');
   writeBundle(src, { release: 'RL-7', pins, files: ['.release-pins.json', 'package-lock.json', 'package.json'] }, bundle, tip);
 
-  const done = bundleCommit({ bundle, tip, pins, release: 'RL-7', n: 7, git });
+  const registry = new Map([['@revt-eng/sdk', { '1.4.0-rl.7.3': { integrity: 'sha512-new', tarball: ghTarball('@revt-eng/sdk', '1.4.0-rl.7.3') } }]]);
+  const done = bundleCommit({ bundle, tip, pins, release: 'RL-7', n: 7, git, registry });
   assert.deepEqual(done.files, ['.release-pins.json', 'package-lock.json', 'package.json']);
   assert.equal(git(['log', '-1', '--format=%P %s', done.sha]).trim(), `${tip} Pin @revt-eng/sdk@1.4.0-rl.7.3 for RL-7`);
   assert.equal(git(['diff', '--name-only', tip, done.sha]).trim().split('\n').sort().join(' '), '.release-pins.json package-lock.json package.json');
@@ -393,7 +394,7 @@ test('the push job commits a checked bundle on the head it was pinned on, and no
     const dir = mkdtempSync(path.join(work, 'tampered-'));
     writeBundle(src, { release: 'RL-7', pins, files: ['package.json'] }, dir, tip);
     mutate(dir);
-    return () => bundleCommit({ bundle: dir, tip, pins, release: 'RL-7', n: 7, git });
+    return () => bundleCommit({ bundle: dir, tip, pins, release: 'RL-7', n: 7, git, registry });
   };
   const manifestOf = (dir) => JSON.parse(readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
   const rewrite = (dir, value) => writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(value));
@@ -404,7 +405,7 @@ test('the push job commits a checked bundle on the head it was pinned on, and no
 });
 
 // Re-review: the push job checks lockfile changes too, entry by entry.
-import { npmLockRefusal, pnpmLockRefusal, readRegistry, resolutionRefusal } from '../scripts/release-pin.mjs';
+import { npmLockRefusal, pnpmLockRefusal, readRegistry, RegistryUnavailable, resolutionRefusal } from '../scripts/release-pin.mjs';
 
 function ghTarball(name, version, hash = 'abc123') { return `https://npm.pkg.github.com/download/${name}/${version}/${hash}`; }
 function npmLock(version, resolved, integrity, extra = {}) { return JSON.stringify({
@@ -422,17 +423,17 @@ test('a package-lock.json may re-pin only the pinned entries, at the pin, from t
   const good = npmLock('1.4.0-rl.7.3', ghTarball('@revt-eng/sdk', '1.4.0-rl.7.3', 'def456'), 'sha512-new');
   const registry = new Map([['@revt-eng/sdk', { '1.4.0-rl.7.3': { integrity: 'sha512-new', tarball: ghTarball('@revt-eng/sdk', '1.4.0-rl.7.3', 'def456') } }]]);
   assert.equal(npmLockRefusal('package-lock.json', before, good, pins, registry), null);
-  assert.equal(npmLockRefusal('package-lock.json', before, good, pins, new Map()), null, 'formats, when the registry could not be read');
+  assert.match(npmLockRefusal('package-lock.json', before, good, pins, new Map()), /registry entry could not be read/, 'no registry entry, no pin');
   assert.match(npmLockRefusal('package-lock.json', before, npmLock('1.4.0-rl.7.3', ghTarball('@revt-eng/sdk', '1.4.0-rl.7.3', 'def456'), 'sha512-forged'), pins, registry), /integrity .* differs from the registry's/);
   assert.match(npmLockRefusal('package-lock.json', before, npmLock('1.4.0-rl.7.3', 'https://evil.example/sdk.tgz', 'sha512-new'), pins, registry), /not the registry's/);
-  assert.match(npmLockRefusal('package-lock.json', before, npmLock('1.4.0-rl.7.3', 'https://evil.example/sdk.tgz', 'sha512-new'), pins, new Map()), /not its registry/);
-  assert.match(npmLockRefusal('package-lock.json', before, npmLock('1.4.0-rl.7.2', ghTarball('@revt-eng/sdk', '1.4.0-rl.7.2'), 'sha512-x'), pins, new Map()), /not the pinned 1\.4\.0-rl\.7\.3/);
-  assert.match(npmLockRefusal('package-lock.json', before, npmLock('1.4.0-rl.7.3', ghTarball('@revt-eng/sdk', '1.4.0-rl.7.3'), 'sha512-new', { hasInstallScript: true }), pins, new Map()), /more than its version, resolved and integrity/);
+  assert.match(npmLockRefusal('package-lock.json', before, npmLock('1.4.0-rl.7.3', 'https://evil.example/sdk.tgz', 'sha512-new'), pins, registry), /not the registry's/);
+  assert.match(npmLockRefusal('package-lock.json', before, npmLock('1.4.0-rl.7.2', ghTarball('@revt-eng/sdk', '1.4.0-rl.7.2'), 'sha512-x'), pins, registry), /not the pinned 1\.4\.0-rl\.7\.3/);
+  assert.match(npmLockRefusal('package-lock.json', before, npmLock('1.4.0-rl.7.3', ghTarball('@revt-eng/sdk', '1.4.0-rl.7.3'), 'sha512-new', { hasInstallScript: true }), pins, registry), /more than its version, resolved and integrity/);
   const other = JSON.parse(good); other.packages['node_modules/zod'].version = '4.0.1';
-  assert.match(npmLockRefusal('package-lock.json', before, JSON.stringify(other), pins, new Map()), /more than the pinned packages' ranges/);
+  assert.match(npmLockRefusal('package-lock.json', before, JSON.stringify(other), pins, registry), /more than the pinned packages' ranges/);
   const added = JSON.parse(good); added.packages['node_modules/evil'] = { version: '1.0.0' };
-  assert.match(npmLockRefusal('package-lock.json', before, JSON.stringify(added), pins, new Map()), /adds or removes entries/);
-  assert.match(npmLockRefusal('package-lock.json', before, JSON.stringify({ ...JSON.parse(good), lockfileVersion: 2 }), pins, new Map()), /lockfileVersion 3/);
+  assert.match(npmLockRefusal('package-lock.json', before, JSON.stringify(added), pins, registry), /adds or removes entries/);
+  assert.match(npmLockRefusal('package-lock.json', before, JSON.stringify({ ...JSON.parse(good), lockfileVersion: 2 }), pins, registry), /lockfileVersion 3/);
 });
 
 const pnpmLock = (version, integrity, { extraImporterLine = '', otherSnapshot = 'pure-rand: 8.4.2' } = {}) => [
@@ -449,26 +450,29 @@ test('a pnpm-lock.yaml may re-pin only the pinned importers, packages and snapsh
   const before = pnpmLock('1.3.0', 'sha512-old');
   const registry = new Map([['@revt-eng/sdk', { '1.4.0': { integrity: 'sha512-new', tarball: ghTarball('@revt-eng/sdk', '1.4.0') } }]]);
   assert.equal(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new'), pins, registry), null);
-  assert.equal(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new'), pins, new Map()), null, 'formats, when the registry could not be read');
+  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new'), pins, new Map()), /registry entry could not be read/, 'no registry entry, no pin');
   assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-forged'), pins, registry), /differs from the registry's/);
-  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.1', 'sha512-new'), pins, new Map()), /not the pinned 1\.4\.0|not a pinned package at its pin/);
-  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new').replace('autoInstallPeers: true', 'autoInstallPeers: false'), pins, new Map()), /changes its settings/);
-  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new').replace("        specifier: 19.2.7\n        version: 19.2.7", "        specifier: 19.2.8\n        version: 19.2.8"), pins, new Map()), /changes react, which is not being pinned/);
-  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new').replace('  react@19.2.7:\n    resolution: {integrity: sha512-react}', '  react@19.2.7:\n    resolution: {integrity: sha512-evil}'), pins, new Map()), /packages react@19\.2\.7 changes/);
-  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new').replace('  react@19.2.7: {}', '  react@19.2.7: {}\n\n  evil@1.0.0: {}'), pins, new Map()), /adds evil@1\.0\.0/);
-  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new', { extraImporterLine: '        evil: true' }), pins, new Map()), /more than a specifier and a version/);
+  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.1', 'sha512-new'), pins, registry), /not the pinned 1\.4\.0|not a pinned package at its pin/);
+  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new').replace('autoInstallPeers: true', 'autoInstallPeers: false'), pins, registry), /changes its settings/);
+  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new').replace("        specifier: 19.2.7\n        version: 19.2.7", "        specifier: 19.2.8\n        version: 19.2.8"), pins, registry), /changes react, which is not being pinned/);
+  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new').replace('  react@19.2.7:\n    resolution: {integrity: sha512-react}', '  react@19.2.7:\n    resolution: {integrity: sha512-evil}'), pins, registry), /packages react@19\.2\.7 changes/);
+  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new').replace('  react@19.2.7: {}', '  react@19.2.7: {}\n\n  evil@1.0.0: {}'), pins, registry), /adds evil@1\.0\.0/);
+  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new', { extraImporterLine: '        evil: true' }), pins, registry), /more than a specifier and a version/);
 });
 
-test('the registry entries are read per package, and a failed read falls back to formats', async () => {
+test('the registry entries are read per package, and an unreadable one stops the attempt', async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push([url, init.headers.Authorization]);
     if (url.includes('npmjs')) return { ok: false, status: 404 };
     return { ok: true, json: async () => ({ versions: { '1.4.0': { dist: { integrity: 'sha512-new', tarball: 't' } } } }) };
   };
-  const registry = await readRegistry([{ name: '@revt-eng/sdk', version: '1.4.0' }, { name: '@revturbine/cli', version: '0.21.20' }], { token: 'tok', fetchImpl });
-  assert.deepEqual(calls, [['https://npm.pkg.github.com/@revt-eng%2fsdk', 'Bearer tok'], ['https://registry.npmjs.org/@revturbine%2fcli', undefined]]);
+  const registry = await readRegistry([{ name: '@revt-eng/sdk', version: '1.4.0' }], { token: 'tok', fetchImpl });
   assert.deepEqual(registry.get('@revt-eng/sdk'), { '1.4.0': { integrity: 'sha512-new', tarball: 't' } });
-  assert.equal(registry.has('@revturbine/cli'), false);
-  assert.equal(resolutionRefusal('x', '@revturbine/cli', '0.21.20', 'sha512-abc', 'https://registry.npmjs.org/@revturbine/cli/-/cli-0.21.20.tgz', registry), null);
+  // Fails closed: an unreadable entry stops the attempt (the commit command exits 75 and the next attempt retries).
+  await assert.rejects(readRegistry([{ name: '@revt-eng/sdk', version: '1.4.0' }, { name: '@revturbine/cli', version: '0.21.20' }], { token: 'tok', fetchImpl }),
+    (error) => error instanceof RegistryUnavailable && /could not read @revturbine\/cli/.test(error.message));
+  assert.deepEqual(calls.slice(0, 2), [['https://npm.pkg.github.com/@revt-eng%2fsdk', 'Bearer tok'], ['https://npm.pkg.github.com/@revt-eng%2fsdk', 'Bearer tok']]);
+  assert.equal(calls[2][0], 'https://registry.npmjs.org/@revturbine%2fcli');
+  assert.match(resolutionRefusal('x', '@revturbine/cli', '0.21.20', 'sha512-abc', 'https://registry.npmjs.org/@revturbine/cli/-/cli-0.21.20.tgz', new Map()), /could not be read/);
 });

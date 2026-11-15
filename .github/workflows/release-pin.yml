@@ -45,8 +45,9 @@ name: Release pin
 #         ruleset lets only bypass Apps write release/RL-*. The commit is the
 #         App's ([bot] identity), which Backlog's merge walk accepts for a final
 #         pin.
-# If the branch moved between the two, the next attempt pins again on the new
-# head (three attempts in this one run, so Backlog's run matching still sees one
+# If the branch moved between the two, or a pinned package's registry entry
+# could not be read (the lockfile check fails closed), the next attempt pins
+# again (three attempts in this one run, so Backlog's run matching still sees one
 # run per dispatch).
 #
 # No concurrency group: GitHub keeps only one pending run per group and cancels
@@ -116,6 +117,6 @@ jobs:
             *" failure "*|*" cancelled "*) echo "::error::A pin attempt failed ($RESULTS)."; exit 1 ;;
           esac
           if [ "$MOVED" = true ]; then
-            echo "::error::$BRANCH moved under three pin attempts; nothing was pushed."
+            echo "::error::Three pin attempts pushed nothing to $BRANCH: it kept moving, or a pinned package's registry entry could not be read."
             exit 1
           fi
