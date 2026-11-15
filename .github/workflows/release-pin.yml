@@ -37,7 +37,9 @@ name: Release pin
 #         branch head into a bare repository, checks the bundle against it with
 #         this workflow's own copy of the script (only pinnable paths; every
 #         package.json differs only in the pinned dependencies, each set to what
-#         the pin writes; the pins are the ones dispatched), writes the commit
+#         the pin writes; each lockfile changes only the pinned packages'
+#         entries, at the pin, with the registry's integrity; the pins are the
+#         ones dispatched), writes the commit
 #         with git plumbing and pushes it with the push App's token (vars
 #         CI_PUSH_APP_ID, secret CI_PUSH_APP_PRIVATE_KEY): the Release branch
 #         ruleset lets only bypass Apps write release/RL-*. The commit is the

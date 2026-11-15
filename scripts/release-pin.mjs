@@ -542,6 +542,174 @@ export function workspacePinRefusal(file, beforeText, afterText, pins) {
   return stray === undefined ? null : `${file} changes a line that names no pinned package: ${stray.trim()}`;
 }
 
+const INTEGRITY = /^sha512-[A-Za-z0-9+/]+={0,2}$/;
+const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Where a pinned package's tarball must come from when its registry entry cannot be read: GitHub Packages or npm. */
+export function tarballPattern(name, version) {
+  if (SCOPED.test(name)) return new RegExp(`^https://npm\\.pkg\\.github\\.com/download/${escapeRe(name)}/${escapeRe(version)}/[0-9a-f]+$`);
+  const base = name.split('/').at(-1);
+  return new RegExp(`^https://registry\\.npmjs\\.org/${escapeRe(name)}/-/${escapeRe(base)}-${escapeRe(version)}\\.tgz$`);
+}
+
+/**
+ * Refusal unless a lockfile entry's integrity (and tarball, when the lockfile names one) is the registry's for
+ * name@version; `registry` maps name -> { [version]: { integrity, tarball } } and lacks a name it could not read,
+ * in which case the formats are checked instead.
+ */
+export function resolutionRefusal(where, name, version, integrity, tarball, registry) {
+  const known = registry?.get(name);
+  if (known) {
+    const dist = known[version];
+    if (!dist) return `${where}: the registry has no ${name}@${version}`;
+    if (integrity !== dist.integrity) return `${where}: the integrity of ${name}@${version} differs from the registry's`;
+    if (tarball !== undefined && tarball !== dist.tarball) return `${where}: ${name}@${version} resolves from ${tarball}, not the registry's ${dist.tarball}`;
+    return null;
+  }
+  if (typeof integrity !== 'string' || !INTEGRITY.test(integrity)) return `${where}: ${name}@${version} has no sha512 integrity`;
+  if (tarball !== undefined && !tarballPattern(name, version).test(tarball)) return `${where}: ${name}@${version} resolves from ${tarball}, not its registry`;
+  return null;
+}
+
+const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
+
+/** The pinned package a package-lock entry key installs (node_modules/<name>, at any depth), or undefined. */
+const lockEntryPin = (key, pins) => pins.find((pin) => key === `node_modules/${pin.name}` || key.endsWith(`/node_modules/${pin.name}`));
+
+/**
+ * A package-lock.json or npm-shrinkwrap.json change that only re-pins (Backlog's lockfilePins rule, on the parsed
+ * file): the same entries; inside a node_modules/<pkg> entry of a pinned package only "version" (to exactly the pin),
+ * "resolved" and "integrity" (the registry's) change; elsewhere only the pinned packages' ranges in dependency fields.
+ */
+export function npmLockRefusal(file, beforeText, afterText, pins, registry) {
+  let before, after;
+  try { before = JSON.parse(beforeText); after = JSON.parse(afterText); } catch { return `${file} is not JSON`; }
+  if (before.lockfileVersion !== 3 || after.lockfileVersion !== 3) return `${file} is not lockfileVersion 3, so its pin cannot be checked`;
+  const rest = (lock) => { const { packages, ...others } = lock; return canonical(others); };
+  if (rest(before) !== rest(after)) return `${file} changes more than its packages`;
+  const was = before.packages ?? {}, now = after.packages ?? {};
+  const keys = Object.keys(was);
+  if (canonical(keys.sort()) !== canonical(Object.keys(now).sort())) return `${file} adds or removes entries, which a pin does not`;
+  for (const key of keys) {
+    const a = was[key], b = now[key];
+    const pin = lockEntryPin(key, pins);
+    if (pin) {
+      const { version: v1, resolved: r1, integrity: i1, ...restA } = a;
+      const { version: v2, resolved: r2, integrity: i2, ...restB } = b;
+      if (canonical(restA) !== canonical(restB)) return `${file}: ${key} changes more than its version, resolved and integrity`;
+      if (v1 === v2 && r1 === r2 && i1 === i2) continue;
+      if (v2 !== pin.version) return `${file}: ${key} is ${v2}, not the pinned ${pin.version}`;
+      const refused = resolutionRefusal(`${file} ${key}`, pin.name, pin.version, i2, r2, registry);
+      if (refused) return refused;
+      continue;
+    }
+    const masked = (entry) => {
+      const copy = JSON.parse(JSON.stringify(entry ?? {}));
+      for (const field of DEPENDENCY_FIELDS) for (const p of pins) if (copy[field] && Object.hasOwn(copy[field], p.name)) copy[field][p.name] = '<pinned>';
+      return canonical(copy);
+    };
+    if (masked(a) !== masked(b)) return `${file}: ${key || 'the root entry'} changes more than the pinned packages' ranges`;
+  }
+  return null;
+}
+
+/** A pnpm-lock.yaml split into its blocks at one indentation: [{ key, lines }], each block's continuation attached. */
+function yamlBlocks(lines, indent) {
+  const blocks = [];
+  const head = new RegExp(`^ {${indent}}('(?:[^']|'')*'|"[^"]*"|[^\\s'"#][^:]*?):(?:\\s|$)`);
+  for (const line of lines) {
+    const m = head.exec(line);
+    if (m && !line.startsWith(`${' '.repeat(indent)} `)) {
+      let key = m[1];
+      if (key.startsWith("'")) key = key.slice(1, -1).replace(/''/g, "'");
+      else if (key.startsWith('"')) key = key.slice(1, -1);
+      blocks.push({ key, lines: [line] });
+    } else if (blocks.length) blocks.at(-1).lines.push(line);
+    else if (line.trim()) blocks.push({ key: null, lines: [line] });
+  }
+  for (const block of blocks) while (block.lines.length > 1 && !block.lines.at(-1).trim()) block.lines.pop();
+  return blocks;
+}
+const blockText = (block) => block.lines.map((line) => line.trimEnd()).join('\n');
+const byKey = (blocks) => new Map(blocks.map((block) => [block.key, block]));
+/** name and version of a pnpm packages/snapshots key: '<name>@<version>' with an optional peer suffix '(...)'. */
+function packageKey(key) {
+  const at = key.indexOf('@', 1);
+  if (at < 0) return null;
+  const rest = key.slice(at + 1), paren = rest.indexOf('(');
+  return { name: key.slice(0, at), version: paren < 0 ? rest : rest.slice(0, paren) };
+}
+
+/**
+ * A pnpm-lock.yaml change that only re-pins: every section but importers, packages and snapshots unchanged; in the
+ * importers only the pinned packages' specifier and version change (the version to exactly the pin, peers allowed);
+ * in packages and snapshots only the pinned packages' entries go and come, the new ones exactly at the pin, and a
+ * new packages entry's resolution is the registry's.
+ */
+export function pnpmLockRefusal(file, beforeText, afterText, pins, registry) {
+  const pinned = new Map(pins.map((pin) => [pin.name, pin.version]));
+  const top = (text) => byKey(yamlBlocks(text.split(/\r?\n/), 0));
+  const before = top(beforeText), after = top(afterText);
+  if (canonical([...before.keys()].sort()) !== canonical([...after.keys()].sort())) return `${file} adds or removes a section`;
+  for (const [key, block] of before) {
+    if (['importers', 'packages', 'snapshots'].includes(key)) continue;
+    if (blockText(block) !== blockText(after.get(key))) return `${file} changes its ${key ?? 'header'}`;
+  }
+  // importers -> <importer> -> <field> -> <name> -> specifier / version
+  const level = (block, indent) => byKey(yamlBlocks(block.lines.slice(1), indent));
+  const sameKeys = (a, b) => canonical([...a.keys()].sort()) === canonical([...b.keys()].sort());
+  const importersA = before.get('importers') ? level(before.get('importers'), 2) : new Map();
+  const importersB = after.get('importers') ? level(after.get('importers'), 2) : new Map();
+  if (!sameKeys(importersA, importersB)) return `${file} adds or removes an importer`;
+  for (const [importer, blockA] of importersA) {
+    const fieldsA = level(blockA, 4), fieldsB = level(importersB.get(importer), 4);
+    if (!sameKeys(fieldsA, fieldsB)) return `${file}: importer ${importer} adds or removes a field`;
+    for (const [field, fA] of fieldsA) {
+      const fB = fieldsB.get(field);
+      if (!['dependencies', 'devDependencies', 'optionalDependencies'].includes(field)) {
+        if (blockText(fA) !== blockText(fB)) return `${file}: importer ${importer} changes ${field}`;
+        continue;
+      }
+      const depsA = level(fA, 6), depsB = level(fB, 6);
+      if (!sameKeys(depsA, depsB)) return `${file}: importer ${importer} adds or removes a dependency`;
+      for (const [name, dA] of depsA) {
+        const dB = depsB.get(name);
+        if (blockText(dA) === blockText(dB)) continue;
+        if (!pinned.has(name)) return `${file}: importer ${importer} changes ${name}, which is not being pinned`;
+        const body = dB.lines.slice(1).map((line) => line.trim()).filter(Boolean);
+        const version = body.find((line) => line.startsWith('version: '))?.slice('version: '.length);
+        if (body.length !== 2 || !body.some((line) => line.startsWith('specifier: ')) || !version)
+          return `${file}: importer ${importer} gives ${name} more than a specifier and a version`;
+        if (!new RegExp(`^${escapeRe(pinned.get(name))}(?:\\(.*\\))?$`).test(version)) return `${file}: importer ${importer} locks ${name} at ${version}, not the pinned ${pinned.get(name)}`;
+      }
+    }
+  }
+  for (const section of ['packages', 'snapshots']) {
+    const a = before.get(section) ? level(before.get(section), 2) : new Map();
+    const b = after.get(section) ? level(after.get(section), 2) : new Map();
+    for (const [key, block] of a) {
+      if (b.has(key)) {
+        if (blockText(block) !== blockText(b.get(key))) return `${file}: ${section} ${key} changes`;
+        continue;
+      }
+      const parsed = packageKey(key);
+      if (!parsed || !pinned.has(parsed.name)) return `${file}: ${section} drops ${key}, which is not being pinned`;
+    }
+    for (const [key, block] of b) {
+      if (a.has(key)) continue;
+      const parsed = packageKey(key);
+      if (!parsed || pinned.get(parsed.name) !== parsed.version) return `${file}: ${section} adds ${key}, which is not a pinned package at its pin`;
+      if (section !== 'packages') continue;
+      const resolution = block.lines.map((line) => line.trim()).find((line) => line.startsWith('resolution: '));
+      const integrity = /integrity: ([^,}\s]+)/.exec(resolution ?? '')?.[1];
+      const tarball = /tarball: ([^,}\s]+)/.exec(resolution ?? '')?.[1];
+      const refused = resolutionRefusal(`${file} packages ${key}`, parsed.name, parsed.version, integrity, tarball, registry);
+      if (refused) return refused;
+    }
+  }
+  return null;
+}
+
 /** Refusal unless a new .release-pins.json keeps the head's records and adds or drops only pinned packages'. */
 export function recordsRefusal(beforeRecords, afterText, pins) {
   let after;
@@ -565,7 +733,7 @@ export function recordsRefusal(beforeRecords, afterText, pins) {
  * The push job's check and commit (see the header). `git(args, input)` runs git against the bare repository and
  * returns stdout; nothing from the Release branch is executed.
  */
-export function commitBundle({ bundle, tip, pins, release, n, git }) {
+export function commitBundle({ bundle, tip, pins, release, n, git, registry = new Map() }) {
   const manifest = JSON.parse(readFileSync(path.join(bundle, 'manifest.json'), 'utf8'));
   if (manifest.base !== tip) return { moved: true, reason: `the branch moved from ${manifest.base} to ${tip} after the pin` };
   if (manifest.release !== release) throw new Error(`the bundle is for ${manifest.release}, not ${release}`);
@@ -598,6 +766,9 @@ export function commitBundle({ bundle, tip, pins, release, n, git }) {
     else if (before === null) refused = `the bundle adds ${file}; a pin only changes files the branch has`;
     else if (name === 'package.json') refused = manifestPinRefusal(file, before, after, pins, n, records);
     else if (name === 'pnpm-workspace.yaml') refused = workspacePinRefusal(file, before, after, pins);
+    else if (name === 'package-lock.json' || name === 'npm-shrinkwrap.json') refused = npmLockRefusal(file, before, after, pins, registry);
+    else if (name === 'pnpm-lock.yaml') refused = pnpmLockRefusal(file, before, after, pins, registry);
+    else refused = `${file} is not a file a pin changes`;
     if (refused) throw new Error(refused);
     const mode = before === null ? '100644' : git(['ls-tree', tip, '--', file]).split(/\s/)[0];
     if (mode !== '100644' && mode !== '100755') throw new Error(`${file} is not a regular file on the branch`);
@@ -626,7 +797,31 @@ function parseArgs(argv) {
   return options;
 }
 
-function main(argv) {
+/**
+ * The registry entries of the pinned packages, name -> { [version]: { integrity, tarball } }: GitHub Packages for
+ * @revt-eng/* (REGISTRY_TOKEN, packages: read), npm for the rest. A name it cannot read is left out (with a warning),
+ * so the lockfile check falls back to the formats.
+ */
+export async function readRegistry(pins, { token = process.env.REGISTRY_TOKEN, fetchImpl = fetch } = {}) {
+  const registry = new Map();
+  for (const name of new Set(pins.map((pin) => pin.name))) {
+    const scoped = SCOPED.test(name);
+    const url = scoped ? `https://npm.pkg.github.com/${name.replace('/', '%2f')}` : `https://registry.npmjs.org/${name.replace('/', '%2f')}`;
+    try {
+      const response = await fetchImpl(url, { headers: { Accept: 'application/json', ...(scoped && token ? { Authorization: `Bearer ${token}` } : {}) } });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const packument = await response.json();
+      const versions = {};
+      for (const [version, entry] of Object.entries(packument.versions ?? {})) versions[version] = { integrity: entry?.dist?.integrity, tarball: entry?.dist?.tarball };
+      registry.set(name, versions);
+    } catch (error) {
+      console.error(`::warning::release-pin: could not read ${name} from its registry (${error.message}); checking lockfile formats instead`);
+    }
+  }
+  return registry;
+}
+
+async function main(argv) {
   const [command, ...rest] = argv;
   const options = parseArgs(rest);
   if (command === 'package-manager') {
@@ -649,7 +844,8 @@ function main(argv) {
       if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
       return result.stdout;
     };
-    process.stdout.write(`${JSON.stringify(commitBundle({ bundle: path.resolve(options.bundle), tip: options.tip, pins, release, n, git }))}\n`);
+    const registry = await readRegistry(pins);
+    process.stdout.write(`${JSON.stringify(commitBundle({ bundle: path.resolve(options.bundle), tip: options.tip, pins, release, n, git, registry }))}\n`);
     return;
   }
   if (command !== 'apply') throw new Error('usage: release-pin.mjs check|apply|commit|package-manager --branch release/RL-<n> --packages "<name>@<version> ..."');
@@ -661,10 +857,8 @@ function main(argv) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try {
-    main(process.argv.slice(2));
-  } catch (error) {
+  main(process.argv.slice(2)).catch((error) => {
     console.error(`::error::release-pin: ${error.message}`);
     process.exit(1);
-  }
+  });
 }

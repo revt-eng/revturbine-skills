@@ -152,6 +152,8 @@ jobs:
           PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
           FETCH_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
+          # Reads the pinned packages' registry entries, so the lockfile check compares integrity and tarball.
+          REGISTRY_TOKEN: ${{ github.token }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         run: |
           set -euo pipefail
