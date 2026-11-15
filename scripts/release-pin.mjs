@@ -585,7 +585,7 @@ export function npmLockRefusal(file, beforeText, afterText, pins, registry) {
   let before, after;
   try { before = JSON.parse(beforeText); after = JSON.parse(afterText); } catch { return `${file} is not JSON`; }
   if (before.lockfileVersion !== 3 || after.lockfileVersion !== 3) return `${file} is not lockfileVersion 3, so its pin cannot be checked`;
-  const rest = (lock) => { const { packages, ...others } = lock; return canonical(others); };
+  const rest = (lock) => { const others = { ...lock }; delete others.packages; return canonical(others); };
   if (rest(before) !== rest(after)) return `${file} changes more than its packages`;
   const was = before.packages ?? {}, now = after.packages ?? {};
   const keys = Object.keys(was);
@@ -761,7 +761,7 @@ export function commitBundle({ bundle, tip, pins, release, n, git, registry = ne
     if (entry.deleted !== false) throw new Error(`the bundle does not say whether ${file} was deleted`);
     const after = readFileSync(path.join(bundle, 'files', file), 'utf8');
     const name = path.posix.basename(file);
-    let refused = null;
+    let refused;
     if (file === PINS_FILE) refused = recordsRefusal(records, after, pins);
     else if (before === null) refused = `the bundle adds ${file}; a pin only changes files the branch has`;
     else if (name === 'package.json') refused = manifestPinRefusal(file, before, after, pins, n, records);
@@ -806,7 +806,8 @@ export async function readRegistry(pins, { token = process.env.REGISTRY_TOKEN, f
   const registry = new Map();
   for (const name of new Set(pins.map((pin) => pin.name))) {
     const scoped = SCOPED.test(name);
-    const url = scoped ? `https://npm.pkg.github.com/${name.replace('/', '%2f')}` : `https://registry.npmjs.org/${name.replace('/', '%2f')}`;
+    const encoded = name.replaceAll('/', '%2f');
+    const url = scoped ? `https://npm.pkg.github.com/${encoded}` : `https://registry.npmjs.org/${encoded}`;
     try {
       const response = await fetchImpl(url, { headers: { Accept: 'application/json', ...(scoped && token ? { Authorization: `Bearer ${token}` } : {}) } });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
