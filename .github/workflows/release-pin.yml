@@ -17,7 +17,7 @@ name: Release pin
 # a release where the manifest was exact, is pinned exactly; a release where the
 # manifest held a range keeps the range's form and upper bound with the version
 # as its lower bound (">=0.12.5 <1" pinned to 0.13.0 becomes ">=0.13.0 <1"). The
-# job commits "Pin <pkg>@<ver> for RL-<n>" with its own token. A pin that is
+# job commits "Pin <pkg>@<ver> for RL-<n>" as revturbine-ci-bot. A pin that is
 # already in place commits nothing. A prerelease pinned over a range records the
 # range in .release-pins.json on the branch (committed with the pin), so the
 # final pin restores it; a pin never moves back (within a Release by build
@@ -27,11 +27,21 @@ name: Release pin
 # Release branch out itself:
 #   gh workflow run release-pin.yml --ref main -f package=<name>@<version> -f branch=release/RL-<n>
 #
+# Push credential: the Release branch ruleset ("Release branches (EP-1747)")
+# lets only revturbine-ci-bot (App 3195587) create, update or delete
+# release/RL-*, so the job pushes with a token from that App, minted after the
+# inputs are validated and scoped to this repository's contents. The key is
+# CI_BOT_APP_PRIVATE_KEY in the ci-bot environment, which only main may use; the
+# workflow is dispatched on main. The token reaches git through a credential
+# helper on the fetch and push only: it is never written to the checkout, and
+# the pin script and package manager run without it. Commits carry the App's
+# identity, which Backlog's merge walk checks a final pin against
+# (revturbine-backlog src/lib/release-merge-model.ts pinCommitIdentity).
+#
 # Runner: GitHub-hosted, not the shared ci-level.yml. The job checks out the
-# Release branch rather than the event commit and keeps that checkout's
-# credentials to push; ci-level.yml checks out the event commit and removes the
-# credentials (revturbine-devkit docs/ops/ci-levels.md, "Jobs that are not
-# checks").
+# Release branch rather than the event commit and pushes to it; ci-level.yml
+# checks out the event commit and removes the credentials (revturbine-devkit
+# docs/ops/ci-levels.md, "Jobs that are not checks").
 #
 # No concurrency group: GitHub keeps only one pending run per group and cancels
 # the rest, which would drop pins. Concurrent pins instead retry their push on
@@ -57,6 +67,7 @@ jobs:
     name: Pin
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment: ci-bot
     env:
       PIN_PACKAGES: ${{ inputs.package }}
       PIN_BRANCH: ${{ inputs.branch }}
@@ -79,11 +90,22 @@ jobs:
       - name: Validate the packages
         run: node trusted/scripts/release-pin.mjs check --branch "$PIN_BRANCH" --packages "$PIN_PACKAGES"
 
+      - name: Mint the revturbine-ci-bot token for the push
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: '3195587'
+          private-key: ${{ secrets.CI_BOT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
       - name: Check out the Release branch
         uses: actions/checkout@v4
         with:
           ref: refs/heads/${{ inputs.branch }}
           path: work
+          persist-credentials: false
 
       # Every dependency here comes from the public npm registry, so no GitHub Packages access.
       - uses: actions/setup-node@v4
@@ -102,13 +124,20 @@ jobs:
         working-directory: work
         env:
           HUSKY: '0'
+          PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "revturbine-ci-bot[bot]"
+          git config user.email "271352006+revturbine-ci-bot[bot]@users.noreply.github.com"
+          # The App token goes to git only, through a credential helper that reads it
+          # from the environment, for the fetch and push below.
+          remote() {
+            git -c credential.helper= \
+              -c 'credential.helper=!f() { test "$1" = get || return 0; echo username=x-access-token; echo "password=$PUSH_TOKEN"; }; f' "$@"
+          }
           out="$RUNNER_TEMP/release-pin.json"
           for attempt in 1 2 3 4 5; do
-            node ../trusted/scripts/release-pin.mjs apply --branch "$PIN_BRANCH" --packages "$PIN_PACKAGES" --out "$out"
+            env -u PUSH_TOKEN node ../trusted/scripts/release-pin.mjs apply --branch "$PIN_BRANCH" --packages "$PIN_PACKAGES" --out "$out"
             if [ "$(node -p 'require(process.argv[1]).files.length' "$out")" = 0 ]; then
               echo "pushed=false" >> "$GITHUB_OUTPUT"
               echo "### Nothing to pin: $PIN_BRANCH already pins $PIN_PACKAGES" >> "$GITHUB_STEP_SUMMARY"
@@ -116,7 +145,7 @@ jobs:
             fi
             node -e 'process.stdout.write(require(process.argv[1]).files.join("\0"))' "$out" | xargs -0 git add --
             git commit --quiet -m "$(node -p 'require(process.argv[1]).message' "$out")"
-            if git push --quiet origin "HEAD:refs/heads/$PIN_BRANCH"; then
+            if remote push --quiet origin "HEAD:refs/heads/$PIN_BRANCH"; then
               sha="$(git rev-parse HEAD)"
               echo "pushed=true" >> "$GITHUB_OUTPUT"
               echo "sha=$sha" >> "$GITHUB_OUTPUT"
@@ -129,7 +158,7 @@ jobs:
               exit 0
             fi
             echo "::notice::$PIN_BRANCH moved while pinning (attempt $attempt); pinning again on its new head."
-            git fetch --quiet origin "refs/heads/$PIN_BRANCH"
+            remote fetch --quiet origin "refs/heads/$PIN_BRANCH"
             git reset --quiet --hard FETCH_HEAD
             sleep $((attempt * 5))
           done
