@@ -1,0 +1,212 @@
+name: Release pin attempt
+
+# One attempt of release-pin.yml (read its header): the pin job runs the package
+# manager on the Release branch with no secrets; the push job runs nothing from
+# the branch, checks the bundle and pushes it with the push App's token.
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        type: string
+        required: true
+      branch:
+        type: string
+        required: true
+      attempt:
+        type: number
+        required: true
+    outputs:
+      moved:
+        description: "'true' when this attempt pushed nothing and the next should try again: the branch moved, or a pinned package's registry entry could not be read"
+        value: ${{ jobs.push.outputs.moved }}
+
+jobs:
+  pin:
+    name: Pin (attempt ${{ inputs.attempt }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.pin.outputs.changed }}
+    env:
+      PIN_PACKAGES: ${{ inputs.package }}
+      PIN_BRANCH: ${{ inputs.branch }}
+      ATTEMPT: ${{ inputs.attempt }}
+    steps:
+      - name: Refuse any branch but a Release branch
+        run: |
+          if [[ ! "$PIN_BRANCH" =~ ^release/RL-[1-9][0-9]*$ ]]; then
+            echo "::error::Refusing branch '$PIN_BRANCH': pins go only to a Release branch, release/RL-<n>."
+            exit 1
+          fi
+          if [ "$ATTEMPT" -gt 1 ]; then sleep $((ATTEMPT * 5)); fi
+
+      - name: Check out the pin script from the dispatched ref
+        uses: actions/checkout@v4
+        with:
+          path: trusted
+          sparse-checkout: scripts/release-pin.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Validate the packages
+        run: node trusted/scripts/release-pin.mjs check --branch "$PIN_BRANCH" --packages "$PIN_PACKAGES"
+
+      - name: Check out the Release branch
+        uses: actions/checkout@v4
+        with:
+          ref: refs/heads/${{ inputs.branch }}
+          path: work
+          persist-credentials: false
+
+      # Every dependency here comes from the public npm registry, so no GitHub Packages access.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install the package manager the branch declares
+        run: |
+          set -euo pipefail
+          # A released npm, pnpm or yarn only (release-pin.mjs package-manager), with no install scripts.
+          pm="$(node trusted/scripts/release-pin.mjs package-manager --dir work)"
+          if [ -n "$pm" ]; then npm install --global --ignore-scripts "$pm"; fi
+
+      - name: Pin and bundle
+        id: pin
+        working-directory: work
+        env:
+          HUSKY: '0'
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/release-pin.json"
+          node ../trusted/scripts/release-pin.mjs apply --branch "$PIN_BRANCH" --packages "$PIN_PACKAGES" --out "$out" --bundle "$RUNNER_TEMP/release-pin-bundle"
+          if [ "$(node -p 'require(process.argv[1]).files.length' "$out")" = 0 ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "### Nothing to pin: $PIN_BRANCH already pins $PIN_PACKAGES" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload the bundle
+        if: steps.pin.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-pin-${{ inputs.attempt }}
+          path: ${{ runner.temp }}/release-pin-bundle
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  push:
+    name: Push (attempt ${{ inputs.attempt }})
+    needs: pin
+    if: needs.pin.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # CI_PUSH_APP_PRIVATE_KEY lives here; the environment admits only main, where release-pin.yml is dispatched.
+    environment: ci-push
+    permissions:
+      contents: read
+    outputs:
+      moved: ${{ steps.commit.outputs.moved }}
+    env:
+      PIN_PACKAGES: ${{ inputs.package }}
+      PIN_BRANCH: ${{ inputs.branch }}
+    steps:
+      - name: Refuse any branch but a Release branch
+        run: |
+          if [[ ! "$PIN_BRANCH" =~ ^release/RL-[1-9][0-9]*$ ]]; then
+            echo "::error::Refusing branch '$PIN_BRANCH'."
+            exit 1
+          fi
+
+      - name: Check out the pin script from the dispatched ref
+        uses: actions/checkout@v4
+        with:
+          path: trusted
+          sparse-checkout: scripts/release-pin.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download the bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: release-pin-${{ inputs.attempt }}
+          path: ${{ runner.temp }}/release-pin-bundle
+
+      - name: Mint the push App token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
+        with:
+          app-id: ${{ vars.CI_PUSH_APP_ID }}
+          private-key: ${{ secrets.CI_PUSH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          # The push App is revturbine-ci-bot, whose installation can do more than push
+          # (actions, pull requests). This token gets contents: write on one repository only.
+          permission-contents: write
+
+      - name: Check the bundle against the branch head, commit and push
+        id: commit
+        env:
+          PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
+          FETCH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          # Reads the pinned packages' registry entries, so the lockfile check compares integrity and tarball.
+          REGISTRY_TOKEN: ${{ github.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          bare="$RUNNER_TEMP/release-branch.git"
+          url="https://github.com/$GITHUB_REPOSITORY"
+          # Tokens reach git through a credential helper reading them from the
+          # environment: FETCH_TOKEN (read-only) for the fetch, PUSH_TOKEN for the push only.
+          as() {
+            local var="$1"; shift
+            git --git-dir "$bare" -c core.hooksPath=/dev/null -c core.fsmonitor=false -c credential.helper= \
+              -c "credential.helper=!f() { test \"\$1\" = get || return 0; echo username=x-access-token; echo \"password=\$$var\"; }; f" "$@"
+          }
+          git init --quiet --bare "$bare"
+          # Only the branch head's objects: nothing from the branch is checked out or run.
+          as FETCH_TOKEN fetch --quiet --depth=1 --no-tags "$url" "refs/heads/$PIN_BRANCH"
+          tip="$(git --git-dir "$bare" rev-parse FETCH_HEAD)"
+          bot="${APP_SLUG}[bot]"
+          id="$(gh api "users/${APP_SLUG}%5Bbot%5D" --jq .id)"
+          export GIT_AUTHOR_NAME="$bot" GIT_COMMITTER_NAME="$bot"
+          export GIT_AUTHOR_EMAIL="${id}+${bot}@users.noreply.github.com" GIT_COMMITTER_EMAIL="${id}+${bot}@users.noreply.github.com"
+          # Exit 75: a pinned package's registry entry could not be read, so the lockfile
+          # cannot be checked. Nothing is committed and the next attempt tries again.
+          code=0
+          result="$(env -u PUSH_TOKEN node trusted/scripts/release-pin.mjs commit --branch "$PIN_BRANCH" --packages "$PIN_PACKAGES" \
+            --git-dir "$bare" --tip "$tip" --bundle "$RUNNER_TEMP/release-pin-bundle")" || code=$?
+          if [ "$code" = 75 ]; then
+            echo "::notice::A pinned package's registry entry could not be read; nothing was pushed, and the next attempt tries again."
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$code" != 0 ]; then exit "$code"; fi
+          if [ "$(node -p 'Boolean(JSON.parse(process.argv[1]).moved)' "$result")" = true ]; then
+            echo "::notice::$PIN_BRANCH moved while pinning; the next attempt pins again on its new head."
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sha="$(node -p 'JSON.parse(process.argv[1]).sha' "$result")"
+          if ! err="$(as PUSH_TOKEN push --quiet "$url" "$sha:refs/heads/$PIN_BRANCH" 2>&1)"; then
+            if grep -qE 'fetch first|non-fast-forward|\[rejected\]' <<<"$err"; then
+              echo "::notice::$PIN_BRANCH moved before the push; the next attempt pins again on its new head."
+              echo "moved=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "$err"
+            echo "::error::Could not push the pin to $PIN_BRANCH."
+            exit 1
+          fi
+          echo "moved=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Pin @ $PIN_BRANCH"
+            echo
+            echo "Commit \`$sha\` on \`$PIN_BRANCH\` by $bot, changing:"
+            node -p 'JSON.parse(process.argv[1]).files.map((f) => "- `" + f + "`").join("\n")' "$result"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -12,30 +12,48 @@ name: Release pin
 # @revturbine/cli, @revturbine/sdk, create-revturbine, revturbine) at an exact
 # version, a prerelease from another Release, an earlier build of this Release
 # than the one already pinned, and a package this repository does not already
-# depend on. It runs the package manager's exact add, with no lifecycle scripts,
-# in every directory whose package.json depends on the package. A prerelease, or
-# a release where the manifest was exact, is pinned exactly; a release where the
-# manifest held a range keeps the range's form and upper bound with the version
-# as its lower bound (">=0.12.5 <1" pinned to 0.13.0 becomes ">=0.13.0 <1"). The
-# job commits "Pin <pkg>@<ver> for RL-<n>" with its own token. A pin that is
-# already in place commits nothing. A prerelease pinned over a range records the
-# range in .release-pins.json on the branch (committed with the pin), so the
+# depend on. A prerelease, or a release where the manifest was exact, is pinned
+# exactly; a release where the manifest held a range keeps the range's form and
+# upper bound with the version as its lower bound (">=0.12.5 <1" pinned to 0.13.0
+# becomes ">=0.13.0 <1"). The commit is "Pin <pkg>@<ver> for RL-<n>". A pin that
+# is already in place commits nothing. A prerelease pinned over a range records
+# the range in .release-pins.json on the branch (committed with the pin), so the
 # final pin restores it; a pin never moves back (within a Release by build
 # number), and the lockfile must resolve exactly the pinned version.
 #
-# Dispatch it on the default branch, so its reviewed copy runs; the job checks the
-# Release branch out itself:
+# Dispatch it on the default branch, so its reviewed copy runs; the jobs check
+# the Release branch out themselves:
 #   gh workflow run release-pin.yml --ref main -f package=<name>@<version> -f branch=release/RL-<n>
 #
-# Runner: GitHub-hosted, not the shared ci-level.yml. The job checks out the
-# Release branch rather than the event commit and keeps that checkout's
-# credentials to push; ci-level.yml checks out the event commit and removes the
-# credentials (revturbine-devkit docs/ops/ci-levels.md, "Jobs that are not
-# checks").
+# Two jobs per attempt (EP-1747 phase 7, release-pin-attempt.yml), because the
+# Release branch is not trusted to run code next to a credential that can write
+# it:
+#   pin   no environment, no secrets: checks the branch out, installs its
+#         packageManager (a released npm, pnpm or yarn only) with no scripts, runs
+#         the pin with no lifecycle scripts, no .pnpmfile.cjs and the runner's
+#         git, and uploads only the changed manifests, lockfiles and
+#         .release-pins.json with the head it pinned on.
+#   push  environment ci-push: checks out nothing from the branch. It fetches the
+#         branch head into a bare repository, checks the bundle against it with
+#         this workflow's own copy of the script (only pinnable paths; every
+#         package.json differs only in the pinned dependencies, each set to what
+#         the pin writes; each lockfile changes only the pinned packages'
+#         entries, at the pin, with the registry's integrity; the pins are the
+#         ones dispatched), writes the commit
+#         with git plumbing and pushes it with the push App's token (revturbine-ci-bot,
+#         narrowed to contents: write on this repository; vars
+#         CI_PUSH_APP_ID, secret CI_PUSH_APP_PRIVATE_KEY): the Release branch
+#         ruleset lets only bypass Apps write release/RL-*. The commit is the
+#         App's ([bot] identity), which Backlog's merge walk accepts for a final
+#         pin.
+# If the branch moved between the two, or a pinned package's registry entry
+# could not be read (the lockfile check fails closed), the next attempt pins
+# again (three attempts in this one run, so Backlog's run matching still sees one
+# run per dispatch).
 #
 # No concurrency group: GitHub keeps only one pending run per group and cancels
-# the rest, which would drop pins. Concurrent pins instead retry their push on
-# the branch's new head.
+# the rest, which would drop pins. Concurrent pins instead pin again on the
+# branch's new head.
 
 on:
   workflow_dispatch:
@@ -49,89 +67,57 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write # the pin commit
+permissions: {}
 
 jobs:
-  pin:
-    name: Pin
+  attempt-1:
+    uses: ./.github/workflows/release-pin-attempt.yml
+    permissions:
+      contents: read
+    with:
+      package: ${{ inputs.package }}
+      branch: ${{ inputs.branch }}
+      attempt: 1
+
+  attempt-2:
+    needs: attempt-1
+    if: needs.attempt-1.outputs.moved == 'true'
+    uses: ./.github/workflows/release-pin-attempt.yml
+    permissions:
+      contents: read
+    with:
+      package: ${{ inputs.package }}
+      branch: ${{ inputs.branch }}
+      attempt: 2
+
+  attempt-3:
+    needs: attempt-2
+    if: needs.attempt-2.outputs.moved == 'true'
+    uses: ./.github/workflows/release-pin-attempt.yml
+    permissions:
+      contents: read
+    with:
+      package: ${{ inputs.package }}
+      branch: ${{ inputs.branch }}
+      attempt: 3
+
+  result:
+    name: Result
+    needs: [attempt-1, attempt-2, attempt-3]
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      PIN_PACKAGES: ${{ inputs.package }}
-      PIN_BRANCH: ${{ inputs.branch }}
+    timeout-minutes: 5
     steps:
-      - name: Refuse any branch but a Release branch
+      - name: Fail unless an attempt pinned or found nothing to pin
+        env:
+          RESULTS: ${{ needs.attempt-1.result }} ${{ needs.attempt-2.result }} ${{ needs.attempt-3.result }}
+          MOVED: ${{ needs.attempt-3.outputs.moved }}
+          BRANCH: ${{ inputs.branch }}
         run: |
-          if [[ ! "$PIN_BRANCH" =~ ^release/RL-[1-9][0-9]*$ ]]; then
-            echo "::error::Refusing branch '$PIN_BRANCH': pins go only to a Release branch, release/RL-<n>."
+          case " $RESULTS " in
+            *" failure "*|*" cancelled "*) echo "::error::A pin attempt failed ($RESULTS)."; exit 1 ;;
+          esac
+          if [ "$MOVED" = true ]; then
+            echo "::error::Three pin attempts pushed nothing to $BRANCH: it kept moving, or a pinned package's registry entry could not be read."
             exit 1
           fi
-
-      - name: Check out the pin script from the dispatched ref
-        uses: actions/checkout@v4
-        with:
-          path: trusted
-          sparse-checkout: scripts/release-pin.mjs
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-
-      - name: Validate the packages
-        run: node trusted/scripts/release-pin.mjs check --branch "$PIN_BRANCH" --packages "$PIN_PACKAGES"
-
-      - name: Check out the Release branch
-        uses: actions/checkout@v4
-        with:
-          ref: refs/heads/${{ inputs.branch }}
-          path: work
-
-      # Every dependency here comes from the public npm registry, so no GitHub Packages access.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Install the package manager the branch declares
-        working-directory: work
-        run: |
-          set -euo pipefail
-          pm="$(node -p "(require('./package.json').packageManager || '').split('+')[0]")"
-          if [ -n "$pm" ]; then npm install --global "$pm"; fi
-
-      - name: Pin, commit and push
-        id: pin
-        working-directory: work
-        env:
-          HUSKY: '0'
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          out="$RUNNER_TEMP/release-pin.json"
-          for attempt in 1 2 3 4 5; do
-            node ../trusted/scripts/release-pin.mjs apply --branch "$PIN_BRANCH" --packages "$PIN_PACKAGES" --out "$out"
-            if [ "$(node -p 'require(process.argv[1]).files.length' "$out")" = 0 ]; then
-              echo "pushed=false" >> "$GITHUB_OUTPUT"
-              echo "### Nothing to pin: $PIN_BRANCH already pins $PIN_PACKAGES" >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-            node -e 'process.stdout.write(require(process.argv[1]).files.join("\0"))' "$out" | xargs -0 git add --
-            git commit --quiet -m "$(node -p 'require(process.argv[1]).message' "$out")"
-            if git push --quiet origin "HEAD:refs/heads/$PIN_BRANCH"; then
-              sha="$(git rev-parse HEAD)"
-              echo "pushed=true" >> "$GITHUB_OUTPUT"
-              echo "sha=$sha" >> "$GITHUB_OUTPUT"
-              {
-                echo "### $(git log -1 --format=%s)"
-                echo
-                echo "Commit \`$sha\` on \`$PIN_BRANCH\`, changing:"
-                node -p 'require(process.argv[1]).files.map((f) => "- `" + f + "`").join("\n")' "$out"
-              } >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-            echo "::notice::$PIN_BRANCH moved while pinning (attempt $attempt); pinning again on its new head."
-            git fetch --quiet origin "refs/heads/$PIN_BRANCH"
-            git reset --quiet --hard FETCH_HEAD
-            sleep $((attempt * 5))
-          done
-          echo "::error::Could not push the pin to $PIN_BRANCH after 5 attempts."
-          exit 1
