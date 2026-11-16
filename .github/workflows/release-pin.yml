@@ -40,7 +40,8 @@ name: Release pin
 #         the pin writes; each lockfile changes only the pinned packages'
 #         entries, at the pin, with the registry's integrity; the pins are the
 #         ones dispatched), writes the commit
-#         with git plumbing and pushes it with the push App's token (vars
+#         with git plumbing and pushes it with the push App's token (revturbine-ci-bot,
+#         narrowed to contents: write on this repository; vars
 #         CI_PUSH_APP_ID, secret CI_PUSH_APP_PRIVATE_KEY): the Release branch
 #         ruleset lets only bypass Apps write release/RL-*. The commit is the
 #         App's ([bot] identity), which Backlog's merge walk accepts for a final

@@ -138,12 +138,14 @@ jobs:
 
       - name: Mint the push App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
         with:
           app-id: ${{ vars.CI_PUSH_APP_ID }}
           private-key: ${{ secrets.CI_PUSH_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          # The push App is revturbine-ci-bot, whose installation can do more than push
+          # (actions, pull requests). This token gets contents: write on one repository only.
           permission-contents: write
 
       - name: Check the bundle against the branch head, commit and push
