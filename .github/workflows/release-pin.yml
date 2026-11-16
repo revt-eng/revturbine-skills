@@ -78,6 +78,11 @@ jobs:
       package: ${{ inputs.package }}
       branch: ${{ inputs.branch }}
       attempt: 1
+    # By name, never `secrets: inherit`: the called workflow gets this one name and no other secret of the
+    # repository or organization. Here it is empty; the push job reads the ci-push environment's secret of
+    # the same name, and the pin job, which declares no environment, cannot (release-pin-attempt.yml).
+    secrets:
+      CI_PUSH_APP_PRIVATE_KEY: ${{ secrets.CI_PUSH_APP_PRIVATE_KEY }}
 
   attempt-2:
     needs: attempt-1
@@ -89,6 +94,8 @@ jobs:
       package: ${{ inputs.package }}
       branch: ${{ inputs.branch }}
       attempt: 2
+    secrets:
+      CI_PUSH_APP_PRIVATE_KEY: ${{ secrets.CI_PUSH_APP_PRIVATE_KEY }}
 
   attempt-3:
     needs: attempt-2
@@ -100,6 +107,8 @@ jobs:
       package: ${{ inputs.package }}
       branch: ${{ inputs.branch }}
       attempt: 3
+    secrets:
+      CI_PUSH_APP_PRIVATE_KEY: ${{ secrets.CI_PUSH_APP_PRIVATE_KEY }}
 
   result:
     name: Result
