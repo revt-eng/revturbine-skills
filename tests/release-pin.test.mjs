@@ -347,10 +347,10 @@ test('a manifest may change only in the pinned dependencies, to what apply write
 
 test('pnpm-workspace.yaml and .release-pins.json change only for the pinned packages', () => {
   const pins = [{ name: '@revt-eng/sdk', version: '1.4.0' }];
-  assert.equal(workspacePinRefusal('pnpm-workspace.yaml', 'packages:\n  - a\n', 'packages:\n  - a\nminimumReleaseAgeExclude:\n  - "@revt-eng/sdk@1.4.0"\n', pins), null);
+  assert.equal(workspacePinRefusal('pnpm-workspace.yaml', 'packages:\n  - a\n', 'packages:\n  - a\nminimumReleaseAgeExclude:\n  - \'@revt-eng/sdk@1.4.0\'\n', pins), null);
   assert.match(workspacePinRefusal('pnpm-workspace.yaml', 'packages:\n  - a\n', 'packages:\n  - a\nonlyBuiltDependencies:\n  - evil\n', pins), /names no pinned package/);
   assert.equal(recordsRefusal({ 'package.json': { '@revt-eng/sdk': '^1.3.0' } }, null, pins), null);
-  assert.equal(recordsRefusal({}, JSON.stringify({ 'web-sdk/package.json': { '@revt-eng/sdk': '^1.3.0' } }), pins), null);
+  assert.equal(recordsRefusal({}, JSON.stringify({ 'web-sdk/package.json': { '@revt-eng/sdk': '^1.3.0' } }), [{ name: '@revt-eng/sdk', version: '1.4.0-rl.7.3' }], (file, name) => (file === 'web-sdk/package.json' && name === '@revt-eng/sdk' ? '^1.3.0' : undefined)), null);
   assert.match(recordsRefusal({}, JSON.stringify({ 'package.json': { other: '^1' } }), pins), /not being pinned/);
   assert.match(recordsRefusal({}, JSON.stringify({ '.github/x.yml': {} }), pins), /not a manifest/);
 });
@@ -778,7 +778,7 @@ test('a resolution is {integrity} or {integrity, tarball}, whole values, read on
   assert.deepEqual(at(plainTree(parsePnpmLock(peerAfter()).lock), 'packages', '@revt-eng/sdk@1.4.0', 'resolution'), { integrity: 'sha512-new', tarball: sdkTarball });
   assert.match(peerRefusal(peerBefore, withResolution(`{integrity: sha512-newer, tarball: ${sdkTarball}}`)), /the integrity of @revt-eng\/sdk@1\.4\.0 differs from the registry's/);
   assert.match(peerRefusal(peerBefore, withResolution(`{integrity: sha512-new, tarball: ${sdkTarball}0}`)), /not the registry's/);
-  assert.match(peerRefusal(peerBefore, withResolution(`{tarball: ${sdkTarball}, integrity: sha512-newer}`)), /differs from the registry's/);
+  notPnpmForm(withResolution(`{tarball: ${sdkTarball}, integrity: sha512-new}`), 'the tarball first');
   assert.match(peerRefusal(peerBefore, withResolution('{integrity: sha512-new}')), /packages @revt-eng\/sdk@1\.4\.0 does not resolve from the GitHub Packages download of that name and version/);
   // An entry of the pinned version that the branch already had, waiting for the pin to point at it, is held to the registry too.
   const seeded = peerAfter().replace('{integrity: sha512-new, tarball', '{integrity: sha512-evil, tarball');
@@ -866,9 +866,14 @@ test('an edge of an added snapshot points at a pin, where the replaced one did, 
     ['1.2.9', '~1.2.3', true], ['1.3.0', '~1.2.3', false], ['19.2.7', '>=19', true], ['18.3.1', '>=19', false], ['19.2.7', '>=18 <20', true], ['20.0.0', '>=18 <20', false], ['19.2.7', '>= 18.0.0', true],
     ['4.4.3', '4.4.3', true], ['4.4.4', '4.4.3', false], ['4.4.3', '=4.4.3', true], ['4.4.3', '4', true], ['4.4.3', '4.x', true], ['4.4.3', '4.3', false], ['4.4.3', '*', true], ['4.4.3', '', true],
     ['2.0.0', '^1.0.0 || ^2.0.0', true], ['3.0.0', '^1.0.0 || ^2.0.0', false], ['1.5.0', '1.0.0 - 2.0.0', true], ['2.0.1', '1.0.0 - 2.0.0', false],
-    ['0.1.562-rl.1.5', '0.1.562-rl.1.5', true], ['0.1.562-rl.1.5', '^0.1.560', false], ['0.1.562-rl.1.5', '>=0.1.562-rl.1.4', true], ['5.0.0-beta.1', '^4.0.0', false], ['4.1.0-beta.1', '^4.0.0', false],
+    ['0.1.562-rl.1.5', '0.1.562-rl.1.5', true], ['0.1.562-rl.1.5', '^0.1.560', false], ['0.1.562-rl.1.5', '>=0.1.562-rl.1.4', false], ['0.1.562-rl.1.5', '=0.1.562-rl.1.5', true], ['0.1.562-rl.1.5', '0.1.562-rl.1.5 || 1.0.0', false], ['5.0.0-beta.1', '^4.0.0', false], ['4.1.0-beta.1', '^4.0.0', false],
     ['4.0.0', 'latest', false], ['4.0.0', 'npm:zod@^4.0.0', false], ['4.0.0', 'workspace:*', false], ['4.0.0', undefined, false], ['^4.0.0', '^4.0.0', false], ['4.0.0', '>4', false], ['4.0.0', '<=4', false],
   ]) assert.equal(inRange(version, range), expected, `${version} in ${range}`);
+  // The third review compared inRange with the semver package: these ten it took and semver does not (one alternative is `*`,
+  // which makes the whole range `*` for semver, and `*` takes no prerelease). A prerelease is now in a range only as that exact version.
+  for (const [version, range] of [['1.0.3-beta', '<=1.0.3-beta || =x'], ['1.1.0-beta', '>= 0.x || <=v1.1.0-rl.1.2'], ['1.0.0-0', '<=v1.0.0-beta || <=x'], ['1.3.1-alpha.1', '^ * || <=v1.3.1-beta'],
+    ['2.10.1-beta', '~x || >= 2.10.1-beta'], ['0.0.0-0', '~>x || <0.0.0-rl.1.2'], ['10.1.0-rl.1.2', '=* || 10.1.0-rl.1.2'], ['2.1.0-rl.1.2', '>= v2.1.0-rl.1.2 || >=0'], ['1.3.3-rl.1.2', '<v1.3.3-rl.1.10 || <=x'],
+    ['10.1.0-beta', '~v10.1.0-0 || >= *']]) assert.equal(inRange(version, range), false, `${version} in ${range}`);
 });
 
 test('an added packages entry carries what the registry lists for the version, where it lists it', () => {
@@ -901,7 +906,7 @@ test('a pnpm-workspace.yaml changes only in the pinned packages\' minimumRelease
   assert.equal(check(head.replace(item, "  - '@revt-eng/core@0.1.560 || 0.1.562-rl.1.5'")), null, 'an exclusion may go');
   assert.equal(check(head.replace(item, "  - '@revt-eng/core@0.1.562-rl.1.5'"), head.replace(`${item}\n`, '')), null, 'a new item');
   assert.match(check(head, head.replace(`${item}\n`, '')), /excludes @revt-eng\/core@0\.1\.559 from the release age/, 'a new item with other versions');
-  assert.equal(check('packages:\n  - a\n\nminimumReleaseAgeExclude:\n  - "@revt-eng/core@0.1.562-rl.1.5"\n', 'packages:\n  - a\n'), null, 'a new key');
+  assert.equal(check("packages:\n  - a\n\nminimumReleaseAgeExclude:\n  - '@revt-eng/core@0.1.562-rl.1.5'\n", 'packages:\n  - a\n'), null, 'a new key');
   assert.equal(check(head), null);
   // A line that names the pinned package anywhere else: under overrides or allowBuilds, in a one-line mapping, as a new key.
   const elsewhere = /changes more than the pinned packages' items under minimumReleaseAgeExclude/;
@@ -949,4 +954,82 @@ test('what the push job reads is bounded', async () => {
   const commit = (git) => () => commitPinBundle({ bundle, tip, pins: peerPins, release: 'RL-7', n: 7, git, registry: peerRegistry });
   assert.throws(commit((args) => { if (args[0] === 'cat-file' && args[2].endsWith(':pnpm-lock.yaml')) throw gitOutputTooLarge(args); throw new Error('no such file'); }), /git cat-file blob a{40}:pnpm-lock\.yaml wrote more than \d+ bytes, more than this script reads/);
   assert.throws(commit(() => { throw new Error('no such file'); }), /the bundle adds pnpm-lock\.yaml/);
+});
+
+// Third review: a bare key line in pnpm-workspace.yaml, entries at the pin that the branch held unused, and records.
+import { recordsRefusal as pinRecordsRefusal } from '../scripts/release-pin.mjs';
+
+test('a minimumReleaseAgeExclude key line cannot take over another key\'s lines', () => {
+  const pins = [{ name: '@revt-eng/core', version: '0.1.562-rl.1.5' }];
+  const head = ['packages:', "  - 'apps/*'", '', 'overrides:', '  lodash: 4.17.21', '', 'patchedDependencies:', '  foo@1.0.0: patches/foo@1.0.0.patch', '', 'allowBuilds:', '  esbuild: true', ''].join('\n');
+  const check = (after, before = head) => workspaceRefusal('pnpm-workspace.yaml', before, after, pins);
+  const item = "  - '@revt-eng/core@0.1.562-rl.1.5'";
+  // The reviewer's input: one line, and a YAML parser reads `overrides: null` and the key's lines under the new key.
+  for (const key of ['overrides:', 'patchedDependencies:', 'allowBuilds:', 'packages:']) {
+    assert.match(check(head.replace(`${key}\n`, `${key}\nminimumReleaseAgeExclude:\n`)), /is not followed by a top-level key|changes more than the pinned packages' items/, key);
+    assert.match(check(head.replace(`${key}\n`, `${key}\nminimumReleaseAgeExclude:\n${item}\n`)), /is not followed by a top-level key|changes more than the pinned packages' items/, `${key} with an item`);
+    assert.match(check(head.replace(`${key}\n`, `${key}\nminimumReleaseAgeExclude:\n${item}\n\n`)), /is not followed by a top-level key|changes more than the pinned packages' items/, `${key} with an item and a blank line`);
+  }
+  // A key line on its own, anywhere: it stays in the comparison.
+  assert.match(check(`${head}minimumReleaseAgeExclude:\n`), /changes more than the pinned packages' items/);
+  assert.match(check(head.replace('overrides:', 'minimumReleaseAgeExclude:\noverrides:')), /changes more than the pinned packages' items/);
+  // Where pnpm puts it: between top-level keys or at the end, with the pinned package's item.
+  assert.equal(check(`${head}minimumReleaseAgeExclude:\n${item}\n`), null);
+  assert.equal(check(`${head}\nminimumReleaseAgeExclude:\n${item}\n`), null);
+  assert.equal(check(head.replace('overrides:', `minimumReleaseAgeExclude:\n${item}\noverrides:`)), null);
+  assert.match(check(head.replace('patchedDependencies:', `minimumReleaseAgeExclude:\n${item}\n\npatchedDependencies:`)), /changes more than the pinned packages' items/, 'a blank line added with it');
+  // Twice, and after something that is not a key.
+  assert.match(check(head.replace('overrides:', `minimumReleaseAgeExclude:\n${item}\noverrides:`).concat(`minimumReleaseAgeExclude:\n${item}\n`)), /has minimumReleaseAgeExclude twice/);
+  assert.match(check(`${head}minimumReleaseAgeExclude:\n${item}\n]\n`), /is not followed by a top-level key/);
+  assert.match(check(`${head}minimumReleaseAgeExclude:\n${item}\n# a comment\n`), /is not followed by a top-level key/);
+  // The quoting pnpm writes: a plain item starting with @ is not YAML, and pnpm does not write double quotes.
+  assert.match(check(`${head}minimumReleaseAgeExclude:\n  - @revt-eng/core@0.1.562-rl.1.5\n`), /quoted as pnpm writes it/);
+  assert.match(check(`${head}minimumReleaseAgeExclude:\n  - "@revt-eng/core@0.1.562-rl.1.5"\n`), /changes more than the pinned packages' items/);
+  const plain = [{ name: 'create-revturbine', version: '1.2.0' }];
+  assert.equal(workspaceRefusal('pnpm-workspace.yaml', `${head}minimumReleaseAgeExclude:\n  - create-revturbine@1.1.0\n`, `${head}minimumReleaseAgeExclude:\n  - create-revturbine@1.1.0 || 1.2.0\n`, plain), null);
+  assert.match(workspaceRefusal('pnpm-workspace.yaml', head, `${head}minimumReleaseAgeExclude:\n  - 'create-revturbine@1.2.0'\n`, plain), /quoted as pnpm writes it/);
+});
+
+test('an entry at the pin that the branch held and nothing depended on is checked as the pin\'s', () => {
+  const sdkSnapshot = "  '@revt-eng/sdk@1.4.0(react@19.2.7)':\n    dependencies:\n      react: 19.2.7";
+  const zods = (text) => text.replace('  zod@4.0.0:\n    resolution: {integrity: sha512-zod}', '  zod@3.0.0:\n    resolution: {integrity: sha512-zod3}\n\n  zod@4.0.0:\n    resolution: {integrity: sha512-zod}').replace('  zod@4.0.0: {}', '  zod@3.0.0: {}\n\n  zod@4.0.0: {}');
+  // The head carries the pinned version's packages and snapshots entries already, unused; the pin moves the importer.
+  const planted = (edges, fields = '') => zods(peerBefore)
+    .replace("  '@revt-eng/sdk@1.3.0':", `  '@revt-eng/sdk@1.4.0':\n${sdkResolution}${fields}\n    peerDependencies:\n      react: '>=19'\n\n  '@revt-eng/sdk@1.3.0':`)
+    .replace("  '@revt-eng/sdk@1.3.0(react@19.2.7)':", `${sdkSnapshot}${edges}\n\n  '@revt-eng/sdk@1.3.0(react@19.2.7)':`);
+  const moved = (edges, fields = '') => zods(peerAfter()).replace(sdkSnapshot, `${sdkSnapshot}${edges}`).replace(sdkResolution, `${sdkResolution}${fields}`);
+  const check = (edges, fields) => peerRefusal(planted(edges, fields), moved(edges, fields));
+  assert.equal(check(''), null, 'as the registry publishes it');
+  assert.equal(check('\n      zod: 4.0.0'), null);
+  // The reviewer's input: an undeclared dependency and a version out of the registry's range.
+  assert.match(check('\n      drizzle-orm: 0.45.2\n      zod: 3.0.0'), /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\), which nothing on the branch depended on, depends on drizzle-orm, which the registry does not list/);
+  assert.match(check('\n      zod: 3.0.0'), /which nothing on the branch depended on, depends on zod at 3\.0\.0, which is neither the branch's only snapshot of it nor in the registry's range/);
+  assert.match(check('\n    optional: true'), /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\) is optional, which the lockfile's dependencies do not explain/);
+  assert.match(check('', '\n    requiresBuild: true'), /packages @revt-eng\/sdk@1\.4\.0, which nothing on the branch depended on, has requiresBuild, which pnpm does not write on a package/);
+  // An entry at the pin that the branch was already using is the branch's: the same pin dispatched again changes nothing.
+  assert.equal(peerRefusal(peerAfter(), peerAfter()), null);
+});
+
+test('.release-pins.json: a record is the range a prerelease pin replaced, and goes with the final pin', () => {
+  const prerelease = [{ name: '@revt-eng/sdk', version: '1.4.0-rl.7.3' }], final = [{ name: '@revt-eng/sdk', version: '1.4.0' }];
+  const atHead = (file, name) => (file === 'package.json' && name === '@revt-eng/sdk' ? '^1.3.0' : file === 'exact/package.json' && name === '@revt-eng/sdk' ? '1.3.0' : undefined);
+  const record = (file, range, name = '@revt-eng/sdk') => JSON.stringify({ [file]: { [name]: range } });
+  // Added: by a prerelease pin, as the range the manifest holds on the branch.
+  assert.equal(pinRecordsRefusal({}, record('package.json', '^1.3.0'), prerelease, atHead), null);
+  const planted = /is not a range that manifest holds for it on the branch/;
+  assert.match(pinRecordsRefusal({}, record('package.json', '>=0.0.1'), prerelease, atHead), planted, 'a range the manifest never had');
+  assert.match(pinRecordsRefusal({}, record('nope/package.json', '*'), prerelease, atHead), planted, 'a manifest that does not exist');
+  assert.match(pinRecordsRefusal({}, record('exact/package.json', '1.3.0'), prerelease, atHead), planted, 'an exact version is not recorded');
+  assert.match(pinRecordsRefusal({}, record('package.json', '^1.3.0'), final, atHead), planted, 'a final pin records nothing');
+  assert.match(pinRecordsRefusal({}, record('package.json', '^1.3.0'), prerelease), planted, 'no manifest to compare with');
+  assert.match(pinRecordsRefusal({}, record('package.json', '*', 'react'), prerelease, atHead), /changes the record of react, which is not being pinned/);
+  // Existing records: unchanged, or removed by the final pin of that package.
+  const held = { 'package.json': { '@revt-eng/sdk': '^1.3.0' }, 'web-sdk/package.json': { '@revt-eng/core': '^1.0.0' } };
+  assert.equal(pinRecordsRefusal(held, JSON.stringify(held), prerelease, atHead), null);
+  assert.equal(pinRecordsRefusal(held, JSON.stringify({ 'web-sdk/package.json': held['web-sdk/package.json'] }), final, atHead), null);
+  assert.match(pinRecordsRefusal(held, JSON.stringify({ 'web-sdk/package.json': held['web-sdk/package.json'] }), prerelease, atHead), /drops the range recorded for @revt-eng\/sdk in package\.json, which only its final pin does/);
+  assert.match(pinRecordsRefusal(held, JSON.stringify({ ...held, 'package.json': { '@revt-eng/sdk': '>=0.0.1' } }), prerelease, atHead), /changes the range recorded for @revt-eng\/sdk in package\.json/);
+  assert.match(pinRecordsRefusal(held, JSON.stringify({ ...held, 'package.json': { '@revt-eng/sdk': '>=0.0.1' } }), final, atHead), /changes the range recorded/);
+  assert.match(pinRecordsRefusal(held, JSON.stringify({ 'package.json': held['package.json'] }), final, atHead), /changes the record of @revt-eng\/core, which is not being pinned/);
+  assert.match(pinRecordsRefusal(held, null, final, atHead), /changes the record of @revt-eng\/core, which is not being pinned/);
 });

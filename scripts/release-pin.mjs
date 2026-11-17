@@ -551,9 +551,15 @@ export function manifestPinRefusal(file, beforeText, afterText, pins, n, records
 /**
  * Refusal unless a pnpm-workspace.yaml differs only in the pinned packages' items of its top-level
  * `minimumReleaseAgeExclude:` list; null when it does. pnpm 11 lists a just-published version there, one item per
- * package ('<name>@<version> || <version> ...'), and adds the key when the file has none. Every other line of the
- * file is the same and in the same place, so nothing is read from it but that list: an item of a pinned package is
- * exactly a name and exact versions, and holds only versions it held on the branch and the pinned one.
+ * package ('<name>@<version> || <version> ...'), and adds the key when the file has none.
+ *
+ * The file is hand-written (comments, any quoting, one-line lists), so it is not parsed: every line but those items
+ * must be the same and in the same place, and the items are read only where they cannot be anything else. The list is
+ * the run of `  - ` lines directly under the key line, and the next line that is not blank must be a top-level key or
+ * the end of the file, so the key cannot be slipped in above another key's lines and take them over. A key line the
+ * branch does not have comes only with a pinned package's item under it. An item of a pinned package is quoted as
+ * pnpm writes it, is exactly a name and exact versions, and holds only versions it held on the branch and the
+ * pinned one.
  */
 export function workspacePinRefusal(file, beforeText, afterText, pins) {
   const pinned = new Map(pins.map((pin) => [pin.name, pin.version]));
@@ -561,14 +567,17 @@ export function workspacePinRefusal(file, beforeText, afterText, pins) {
     const lines = String(text ?? '').split('\n'), kept = [], items = new Map();
     const at = lines.indexOf('minimumReleaseAgeExclude:');
     let end = at + 1, others = 0;
+    while (at >= 0 && end < lines.length && lines[end].startsWith('  - ')) end += 1;
+    if (lines.indexOf('minimumReleaseAgeExclude:', at + 1) >= 0 && at >= 0) return { bad: 'it has minimumReleaseAgeExclude twice' };
+    const next = at < 0 ? undefined : lines.slice(end).find((line) => line !== '');
+    if (next !== undefined && !/^[A-Za-z][A-Za-z0-9]*:(?: |$)/.test(next)) return { bad: 'its minimumReleaseAgeExclude list is not followed by a top-level key' };
     for (let i = 0; i < lines.length; i += 1) {
-      if (at >= 0 && i === end && lines[i].startsWith('  - ')) {
-        end += 1;
-        const item = /^ {2}- (?:'([^'"\\]+)'|"([^'"\\]+)"|([^\s'"\\#]+))$/.exec(lines[i]);
-        const value = item ? item[1] ?? item[2] ?? item[3] : '', split = value.indexOf('@', 1), name = split > 0 ? value.slice(0, split) : null;
+      if (at >= 0 && i > at && i < end) {
+        const item = /^ {2}- (?:'([^'"\\]+)'|([^\s'"\\#](?:[^'"\\#]*[^\s'"\\#])?))$/.exec(lines[i]);
+        const value = item ? item[1] ?? item[2] : '', split = value.indexOf('@', 1), name = split > 0 ? value.slice(0, split) : null;
         if (name !== null && pinned.has(name)) {
           const versions = value.slice(split + 1).split(' || ');
-          if (items.has(name) || !versions.every((version) => EXACT.test(version))) return null;
+          if (items.has(name) || plainScalar(value) !== (item[2] !== undefined) || !versions.every((version) => EXACT.test(version))) return { bad: `its minimumReleaseAgeExclude item of ${name} is not '<name>@<version> || <version> ...', once, quoted as pnpm writes it` };
           items.set(name, versions);
           continue;
         }
@@ -576,11 +585,13 @@ export function workspacePinRefusal(file, beforeText, afterText, pins) {
       }
       kept.push(lines[i]);
     }
-    if (at >= 0 && !others) kept.splice(at, 1);
+    // The key line goes with its items only when every item under it was a pinned package's: a key line with nothing
+    // under it stays in the comparison, so it cannot be added on its own.
+    if (items.size && !others) kept.splice(at, 1);
     return { text: kept.join('\n').replace(/\n+$/, '\n'), items };
   };
   const before = read(beforeText), after = read(afterText);
-  if (!before || !after) return `${file} has a minimumReleaseAgeExclude item of a pinned package that is not '<name>@<version> || <version> ...', once`;
+  if (before.bad || after.bad) return `${file}: ${after.bad ?? before.bad}`;
   if (before.text !== after.text) return `${file} changes more than the pinned packages' items under minimumReleaseAgeExclude: a line that names no pinned package, or names one anywhere else`;
   for (const [name, versions] of after.items) {
     const held = before.items.get(name) ?? [];
@@ -679,7 +690,7 @@ const unquoted = (token) => token.slice(1, -1).replace(/''/g, "'");
 /**
  * A one-line `{key: value, ...}` as { pairs } (a Map, in order) or { why }. The line must close on itself and hold at
  * least one pair; no key twice; every value a string. A resolution is exactly `{integrity: <hash>}` or
- * `{integrity: <hash>, tarball: <https url>}`: those keys only, plain, each value one token.
+ * `{integrity: <hash>, tarball: <https url>}`: those keys only, in that order, plain, each value one token.
  */
 function flowMap(value, resolution) {
   const pairs = new Map();
@@ -692,7 +703,7 @@ function flowMap(value, resolution) {
     const key = quotedKey ? unquoted(pair[1]) : pair[1], text = quotedValue ? unquoted(pair[2]) : pair[2];
     if (pairs.has(key)) return { why: `the key ${key} twice` };
     if (!quotedValue && !plainScalar(text)) return { why: `a value of ${key} that is not a string` };
-    if (resolution && (quotedKey || quotedValue || !RESOLUTION.get(key)?.test(text))) return { why: 'a resolution that is not {integrity: <hash>} or {integrity: <hash>, tarball: <https url>}' };
+    if (resolution && (quotedKey || quotedValue || !RESOLUTION.get(key)?.test(text) || (pairs.size === 0) !== (key === 'integrity'))) return { why: 'a resolution that is not {integrity: <hash>} or {integrity: <hash>, tarball: <https url>}' };
     pairs.set(key, text);
     at = FLOW_PAIR.lastIndex;
   }
@@ -920,26 +931,26 @@ const downloadUrl = (name, version) => new RegExp(`^https://npm\\.pkg\\.github\\
 
 /**
  * Whether an exact version is in an npm range, for the ranges this reads: comparators (^ ~ >= > <= < =), bare and
- * partial versions (1, 1.2, 1.x), `*`, hyphen ranges and `||`. A prerelease is in a range only when a comparator
- * names a prerelease of the same version, as in npm. Anything it does not read is not in range.
+ * partial versions (1, 1.2, 1.x), `*`, hyphen ranges and `||`. A prerelease is in a range only when the range is
+ * exactly that version: what else npm would take it for depends on the whole range, and a pin never needs it (a
+ * Release's own prereleases are pinned, and a pinned package is held to its pin, not to a range). Anything this
+ * does not read is not in range, so it refuses more than npm does and never less.
  */
 export function inRange(version, range) {
   if (!EXACT.test(String(version ?? '')) || typeof range !== 'string') return false;
+  if (isPrerelease(version)) return range.trim().replace(/^=\s*/, '') === version;
   const below = (upper) => compareSemver(version, `${upper}-0`) < 0;
-  const core = (text) => text.replace(/-.*$/, '');
   return range.split('||').some((alternative) => {
     const text = alternative.trim().replace(/(\^|~|>=|<=|>|<|=)\s+/g, '$1');
-    if (text === '' || text === '*' || text === 'x') return !isPrerelease(version);
+    if (text === '' || text === '*' || text === 'x') return true;
     const hyphen = /^(\S+)\s+-\s+(\S+)$/.exec(text);
     const comparators = hyphen ? [`>=${hyphen[1]}`, `<=${hyphen[2]}`] : text.split(/\s+/);
-    let named = !isPrerelease(version);
     return comparators.every((comparator) => {
       const match = /^(\^|~|>=|<=|>|<|=)?v?([0-9][0-9A-Za-z.+-]*?)((?:\.[xX*]){0,2})$/.exec(comparator);
       const parts = match && PARTIAL.exec(match[2]);
       if (!parts || (match[3] && parts[4] !== undefined)) return false;
       const [major, minor, patch] = [parts[1], match[3].length > 2 ? undefined : parts[2], match[3] ? undefined : parts[3]].map((part) => (part === undefined ? undefined : Number(part)));
       const lower = `${major}.${minor ?? 0}.${patch ?? 0}${parts[4] !== undefined ? `-${parts[4]}` : ''}`, whole = patch !== undefined;
-      if (parts[4] !== undefined && core(lower) === core(version)) named = true;
       const next = minor === undefined ? `${major + 1}.0.0` : `${major}.${minor + 1}.0`;
       switch (match[1] ?? (whole ? '=' : 'x')) {
         case '=': return whole && compareSemver(version, lower) === 0;
@@ -953,7 +964,7 @@ export function inRange(version, range) {
           return compareSemver(version, lower) >= 0 && below(caret);
         }
       }
-    }) && named;
+    });
   });
 }
 
@@ -1138,7 +1149,8 @@ export const requiredSnapshots = (importers, snapshots) => lockGraph(importers, 
  * follows from that is allowed and nothing else: in that package's snapshots, exactly the peers whose flag differs
  * move between dependencies and optionalDependencies, at the same references; and a snapshot gains or loses
  * `optional: true` only when the new lockfile's own graph says so (lockGraph). In the new lockfile every edge names a
- * snapshot it has, and something depends on every snapshot the pin adds.
+ * snapshot it has, and something depends on every snapshot the pin adds. An entry of a pinned package at its pin
+ * that the branch held without anything depending on it is checked as if the pin added it.
  */
 export function pnpmLockRefusal(file, beforeText, afterText, pins, registry, manifests = new Map()) {
   const malformed = pnpmFormRefusal(`${file} on the branch`, beforeText) ?? pnpmFormRefusal(file, afterText);
@@ -1177,8 +1189,8 @@ export function pnpmLockRefusal(file, beforeText, afterText, pins, registry, man
   }
   const packagesA = section(before, 'packages'), packagesB = section(after, 'packages');
   const snapshotsA = section(before, 'snapshots'), snapshotsB = section(after, 'snapshots');
-  /** The snapshots whose `optional: true` must be the graph's: the ones that changed it, and the ones the pin adds. */
-  const flips = [], added = [];
+  /** The snapshots whose `optional: true` must be the graph's: the ones that changed it, the ones the pin adds, and the ones it brings into use. */
+  const flips = [], added = [], revived = [];
   /** Why a snapshots entry that keeps its key may not change, or null; `flips` collects a changed `optional: true`. */
   const snapshotRefusal = (key, entryA, entryB) => {
     const a = edgesOf(entryA), b = edgesOf(entryB);
@@ -1221,6 +1233,15 @@ export function pnpmLockRefusal(file, beforeText, afterText, pins, registry, man
     if ((only.length === 1 && only[0] === target) || (to.name === name && inRange(to.version, range))) return null;
     return `depends on ${name} at ${to.version}, which is neither the branch's only snapshot of it nor in the registry's range ${JSON.stringify(range ?? null)}; pin it by hand`;
   };
+  /** Why a snapshot of a pinned package at its pin is not that version as the registry publishes it, or null. */
+  const snapshotAtPinRefusal = (key, parsed, entry, declared) => {
+    const owner = `${parsed.name}@${parsed.version}`;
+    if (!declared || !packagesB.has(owner)) return 'is of a package the lockfile or the registry does not have';
+    const { dependencies, optionalDependencies } = edgesOf(entry);
+    return newSnapshotRefusal(parsed, entry, declared, optionalPeerNames(packagesB.get(owner)), (target) => target !== null && snapshotsB.has(target))
+      ?? [...dependencies, ...optionalDependencies].map(([name, reference]) => edgeRefusal(parsed.name, name, reference,
+        (dependencies.has(name) ? declared.dependencies?.[name] : declared.optionalDependencies?.[name]) ?? declared.peerDependencies?.[name])).find((why) => why !== null) ?? null;
+  };
   for (const [sectionName, a, b] of [['packages', packagesA, packagesB], ['snapshots', snapshotsA, snapshotsB]]) {
     for (const [key, entry] of a) {
       if (b.has(key)) {
@@ -1245,14 +1266,30 @@ export function pnpmLockRefusal(file, beforeText, afterText, pins, registry, man
         if (shaped) return `${file}: packages ${key} ${shaped}`;
         continue;
       }
-      const owner = `${parsed.name}@${parsed.version}`;
-      if (!declared || !packagesB.has(owner)) return `${file}: snapshots ${key} is of a package the lockfile or the registry does not have`;
-      const { dependencies, optionalDependencies } = edgesOf(entry);
-      const refused = newSnapshotRefusal(parsed, entry, declared, optionalPeerNames(packagesB.get(owner)), (target) => target !== null && snapshotsB.has(target))
-        ?? [...dependencies, ...optionalDependencies].map(([name, reference]) => edgeRefusal(parsed.name, name, reference,
-          (dependencies.has(name) ? declared.dependencies?.[name] : declared.optionalDependencies?.[name]) ?? declared.peerDependencies?.[name])).find((why) => why !== null);
+      const refused = snapshotAtPinRefusal(key, parsed, entry, declared);
       if (refused) return `${file}: snapshots ${key} ${refused}`;
       added.push(key);
+    }
+  }
+  // An entry of a pinned package at its pin that the branch already held, and that nothing on the branch depended
+  // on, is the pin's in all but name: the pin is what brings it into use. It is held to the same rules.
+  const headGraph = lockGraph(importersA, snapshotsA), headOwners = new Set();
+  for (const key of headGraph.referenced) {
+    const parsed = packageKey(key);
+    if (parsed) headOwners.add(`${parsed.name}@${parsed.version}`);
+  }
+  for (const [name, version] of pinned) {
+    const owner = `${name}@${version}`, declared = registry?.get(name)?.[version];
+    if (packagesA.has(owner) && packagesB.has(owner) && !headOwners.has(owner)) {
+      const shaped = newPackageRefusal(owner, packageKey(owner), packagesB.get(owner), declared, manifests);
+      if (shaped) return `${file}: packages ${owner}, which nothing on the branch depended on, ${shaped}`;
+    }
+    for (const key of headKeys.get(name) ?? []) {
+      const parsed = packageKey(key);
+      if (parsed.version !== version || !snapshotsB.has(key) || headGraph.referenced.has(key)) continue;
+      const refused = snapshotAtPinRefusal(key, parsed, snapshotsB.get(key), declared);
+      if (refused) return `${file}: snapshots ${key}, which nothing on the branch depended on, ${refused}`;
+      revived.push(key);
     }
   }
   // A pinned package resolves from its registry whether the pin adds its entry or the branch already had one.
@@ -1267,8 +1304,8 @@ export function pnpmLockRefusal(file, beforeText, afterText, pins, registry, man
   if (graph.dangling !== undefined) return `${file}: ${graph.dangling} is depended on, and the lockfile has no snapshot of it`;
   const orphan = added.find((key) => !graph.referenced.has(key));
   if (orphan !== undefined) return `${file}: snapshots adds ${orphan}, which nothing depends on`;
-  const stray = [...flips, ...added].find((key) => (snapshotsB.get(key).get('optional') === true) === graph.required.has(key));
-  if (stray !== undefined) return `${file}: snapshots ${stray} ${added.includes(stray) ? 'is' : 'changes whether it is'} optional, which the lockfile's dependencies do not explain`;
+  const stray = [...flips, ...added, ...revived].find((key) => (snapshotsB.get(key).get('optional') === true) === graph.required.has(key));
+  if (stray !== undefined) return `${file}: snapshots ${stray} ${flips.includes(stray) ? 'changes whether it is' : 'is'} optional, which the lockfile's dependencies do not explain`;
   return null;
 }
 
@@ -1323,20 +1360,41 @@ export function tarballManifest(tgz) {
   return JSON.parse(found);
 }
 
-/** Refusal unless a new .release-pins.json keeps the head's records and adds or drops only pinned packages'. */
-export function recordsRefusal(beforeRecords, afterText, pins) {
+/**
+ * Refusal unless a new .release-pins.json (null: the file is gone) differs from the head's records only as a pin
+ * changes them; null when it does. A record is the range a prerelease pin replaced in a manifest, kept so that the
+ * final pin can restore it. So a record is added only for a pinned package, by a prerelease pin, and only as the
+ * range that manifest holds for the package on the branch head (`rangeAtHead(file, name)`: undefined when the head
+ * has no such manifest or the manifest no such dependency); a record goes only for a pinned package, by its final
+ * pin; and no record changes.
+ * @param {Record<string, Record<string, string>>} beforeRecords
+ * @param {string | null} afterText
+ * @param {{ name: string, version: string }[]} pins
+ * @param {(file: string, name: string) => string | undefined} [rangeAtHead]
+ */
+export function recordsRefusal(beforeRecords, afterText, pins, rangeAtHead = () => undefined) {
   let after;
   try { after = afterText === null ? {} : JSON.parse(afterText); } catch { return `${PINS_FILE} is not JSON`; }
   if (!after || typeof after !== 'object' || Array.isArray(after)) return `${PINS_FILE} is not an object`;
-  const pinned = new Set(pins.map((pin) => pin.name));
+  const pinned = new Map(pins.map((pin) => [pin.name, pin.version]));
   const keys = new Set([...Object.keys(beforeRecords), ...Object.keys(after)]);
   for (const file of keys) {
     if (!pinnablePath(file) || path.posix.basename(file) !== 'package.json') return `${PINS_FILE} records ${file}, which is not a manifest`;
     const was = beforeRecords[file] ?? {}, now = after[file] ?? {};
-    if (typeof now !== 'object' || Array.isArray(now)) return `${PINS_FILE} records ${file} as ${JSON.stringify(now)}`;
+    if (!now || typeof now !== 'object' || Array.isArray(now)) return `${PINS_FILE} records ${file} as ${JSON.stringify(now)}`;
     for (const name of new Set([...Object.keys(was), ...Object.keys(now)])) {
       if (typeof (now[name] ?? '') !== 'string') return `${PINS_FILE} records ${name} in ${file} as ${JSON.stringify(now[name])}`;
-      if (was[name] !== now[name] && !pinned.has(name)) return `${PINS_FILE} changes the record of ${name}, which is not being pinned`;
+      if (was[name] === now[name]) continue;
+      if (!pinned.has(name)) return `${PINS_FILE} changes the record of ${name}, which is not being pinned`;
+      const prerelease = isPrerelease(pinned.get(name));
+      if (was[name] !== undefined && now[name] !== undefined) return `${PINS_FILE} changes the range recorded for ${name} in ${file}; a pin adds or removes a record`;
+      if (now[name] === undefined) {
+        if (prerelease) return `${PINS_FILE} drops the range recorded for ${name} in ${file}, which only its final pin does`;
+        continue;
+      }
+      const range = rangeAtHead(file, name);
+      if (!prerelease || typeof range !== 'string' || EXACT.test(range.trim()) || now[name] !== range)
+        return `${PINS_FILE} records ${JSON.stringify(now[name])} for ${name} in ${file}, which is not a range that manifest holds for it on the branch, replaced by a prerelease pin`;
     }
   }
   return null;
@@ -1357,6 +1415,11 @@ export function commitBundle({ bundle, tip, pins, release, n, git, registry = ne
   const atTip = (file) => { try { return git(['cat-file', 'blob', `${tip}:${file}`]); } catch (error) { if (error?.tooLarge) throw error; return null; } };
   const tipRecordsText = atTip(PINS_FILE);
   const records = tipRecordsText === null ? {} : JSON.parse(tipRecordsText);
+  const rangeAtHead = (file, name) => {
+    const text = atTip(file);
+    if (text === null) return undefined;
+    try { const manifest = JSON.parse(text), field = dependencyField(manifest, name); return field ? manifest[field][name] : undefined; } catch { return undefined; }
+  };
   const entries = [];
   for (const entry of files) {
     const file = entry?.path;
@@ -1366,7 +1429,7 @@ export function commitBundle({ bundle, tip, pins, release, n, git, registry = ne
     if (entry.deleted === true) {
       if (file !== PINS_FILE) throw new Error(`the bundle deletes ${file}; a pin deletes only ${PINS_FILE}`);
       if (before === null) throw new Error(`the bundle deletes ${file}, which the branch does not have`);
-      const refused = recordsRefusal(records, null, pins);
+      const refused = recordsRefusal(records, null, pins, rangeAtHead);
       if (refused) throw new Error(refused);
       entries.push({ file, remove: true });
       continue;
@@ -1375,7 +1438,7 @@ export function commitBundle({ bundle, tip, pins, release, n, git, registry = ne
     const after = readFileSync(path.join(bundle, 'files', file), 'utf8');
     const name = path.posix.basename(file);
     let refused;
-    if (file === PINS_FILE) refused = recordsRefusal(records, after, pins);
+    if (file === PINS_FILE) refused = recordsRefusal(records, after, pins, rangeAtHead);
     else if (before === null) refused = `the bundle adds ${file}; a pin only changes files the branch has`;
     else if (name === 'package.json') refused = manifestPinRefusal(file, before, after, pins, n, records);
     else if (name === 'pnpm-workspace.yaml') refused = workspacePinRefusal(file, before, after, pins);
