@@ -1301,7 +1301,7 @@ const TARBALL_UNPACKED_BYTES = 256 * 1024 * 1024, TARBALL_BYTES = 64 * 1024 * 10
  */
 export function tarballManifest(tgz) {
   let tar;
-  try { tar = gunzipSync(tgz, { maxOutputLength: TARBALL_UNPACKED_BYTES }); } catch (error) { throw new Error(`the tarball is not a gzip archive, or unpacks to more than ${TARBALL_UNPACKED_BYTES} bytes (${error.message})`); }
+  try { tar = gunzipSync(tgz, { maxOutputLength: TARBALL_UNPACKED_BYTES }); } catch (error) { throw new Error(`the tarball is not a gzip archive, or unpacks to more than ${TARBALL_UNPACKED_BYTES} bytes (${error.message})`, { cause: error }); }
   let found = null, renamed = null;
   for (let at = 0; at + 512 <= tar.length;) {
     const header = tar.subarray(at, at + 512);
@@ -1473,12 +1473,12 @@ export async function readManifests(entries, { token = process.env.REGISTRY_TOKE
   for (const entry of entries) {
     let bytes;
     try {
-      const response = await fetchImpl(entry.tarball, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(timeoutMs) });
+      const response = await fetchImpl(entry.tarball, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: globalThis.AbortSignal.timeout(timeoutMs) });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       bytes = await limitedBody(response, maxBytes);
     } catch (error) {
-      if (error?.tooLarge) throw new Error(`the tarball of ${entry.key} was not read: ${error.message}`);
-      throw new RegistryUnavailable(`could not read the tarball of ${entry.key} (${error.message})`);
+      if (error?.tooLarge) throw new Error(`the tarball of ${entry.key} was not read: ${error.message}`, { cause: error });
+      throw new RegistryUnavailable(`could not read the tarball of ${entry.key} (${error.message})`, { cause: error });
     }
     if (`sha512-${createHash('sha512').update(bytes).digest('base64')}` !== entry.integrity) throw new Error(`the tarball of ${entry.key} does not have the integrity the lockfile records`);
     manifests.set(entry.key, { integrity: entry.integrity, manifest: tarballManifest(bytes) });

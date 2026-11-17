@@ -926,17 +926,17 @@ test('what the push job reads is bounded', async () => {
   // The download: a deadline, and a size limit by content-length, by what arrives and by what is read whole.
   let signal;
   await assert.rejects(readManifests([entry], { fetchImpl: fetching(async (url, init) => { signal = init.signal; throw new Error('aborted'); }) }), (error) => error instanceof RegistryUnavailable);
-  assert.ok(signal instanceof AbortSignal);
+  assert.ok(signal instanceof globalThis.AbortSignal);
   await assert.rejects(readManifests([entry], { fetchImpl: fetching(async () => { throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }); }), timeoutMs: 5 }),
     (error) => error instanceof RegistryUnavailable && /could not read the tarball/.test(error.message));
   const tooLarge = /the tarball of @revt-eng\/core@1\.0\.0-rl\.7\.2 was not read: it is larger than 1024 bytes/;
-  await assert.rejects(readManifests([entry], { maxBytes: 1024, fetchImpl: fetching(async () => ({ ok: true, headers: new Headers({ 'content-length': '4096' }), arrayBuffer: async () => { throw new Error('must not be read'); } })) }), tooLarge);
+  await assert.rejects(readManifests([entry], { maxBytes: 1024, fetchImpl: fetching(async () => ({ ok: true, headers: new globalThis.Headers({ 'content-length': '4096' }), arrayBuffer: async () => { throw new Error('must not be read'); } })) }), tooLarge);
   await assert.rejects(readManifests([entry], { maxBytes: 1024, fetchImpl: fetching(async () => ({ ok: true, arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.length) })) }), tooLarge);
   let cancelled = false;
   const stream = () => { let sent = 0; return { getReader: () => ({ read: async () => (sent++ < 8 ? { done: false, value: new Uint8Array(512) } : { done: true }), cancel: async () => { cancelled = true; } }) }; };
-  await assert.rejects(readManifests([entry], { maxBytes: 1024, fetchImpl: fetching(async () => ({ ok: true, headers: new Headers(), body: stream() })) }), tooLarge);
+  await assert.rejects(readManifests([entry], { maxBytes: 1024, fetchImpl: fetching(async () => ({ ok: true, headers: new globalThis.Headers(), body: stream() })) }), tooLarge);
   assert.equal(cancelled, true);
-  assert.equal(await readManifests([entry], { maxBytes: 8192, fetchImpl: fetching(async () => ({ ok: true, headers: new Headers(), body: stream() })) }).catch((error) => error.message), 'the tarball of @revt-eng/core@1.0.0-rl.7.2 does not have the integrity the lockfile records');
+  assert.equal(await readManifests([entry], { maxBytes: 8192, fetchImpl: fetching(async () => ({ ok: true, headers: new globalThis.Headers(), body: stream() })) }).catch((error) => error.message), 'the tarball of @revt-eng/core@1.0.0-rl.7.2 does not have the integrity the lockfile records');
   // The tarball: not gzip, and an entry renamed by a pax header, as tar reads it.
   assert.throws(() => tarballManifest(Buffer.from('hello')), /not a gzip archive/);
   assert.deepEqual(tarballManifest(tarball([['PaxHeader/package.json', '30 path=package/package.json\n', 'x'], ['package/p', '{"name":"renamed"}']])), { name: 'renamed' });
