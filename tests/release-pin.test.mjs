@@ -476,3 +476,57 @@ test('the registry entries are read per package, and an unreadable one stops the
   assert.equal(calls[2][0], 'https://registry.npmjs.org/@revturbine%2fcli');
   assert.match(resolutionRefusal('x', '@revturbine/cli', '0.21.20', 'sha512-abc', 'https://registry.npmjs.org/@revturbine/cli/-/cli-0.21.20.tgz', new Map()), /could not be read/);
 });
+
+// GitHub Packages' metadata omits peerDependenciesMeta, so pnpm writes a @revt-eng entry without its optional peers when
+// it resolves the version from the registry and with them when it reads the manifest of an entry the lockfile already
+// has. A pin that moves one package therefore rewrites which peers of the others are optional (web RL-1, 2026-11-17:
+// "packages @revt-eng/core@0.1.562-rl.1.5 changes" when only the SDK moved from rl.1.4 to rl.1.5).
+const peerLock = ({ sdk = '1.3.0', integrity = 'sha512-old', optionalPeer = false, coreIntegrity = 'sha512-core', drizzleOptional = optionalPeer } = {}) => [
+  "lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '', 'importers:', '', '  .:', '    dependencies:',
+  "      '@revt-eng/core':", '        specifier: 1.0.0-rl.7.2', '        version: 1.0.0-rl.7.2(drizzle-orm@0.45.2)',
+  "      '@revt-eng/sdk':", `        specifier: ${sdk}`, `        version: ${sdk}(react@19.2.7)`,
+  '      react:', '        specifier: 19.2.7', '        version: 19.2.7', '', 'packages:', '',
+  "  '@revt-eng/core@1.0.0-rl.7.2':", `    resolution: {integrity: ${coreIntegrity}, tarball: ${ghTarball('@revt-eng/core', '1.0.0-rl.7.2')}}`,
+  '    peerDependencies:', "      drizzle-orm: '>=0.30.0'", ...(optionalPeer ? ['    peerDependenciesMeta:', '      drizzle-orm:', '        optional: true'] : []), '',
+  `  '@revt-eng/sdk@${sdk}':`, `    resolution: {integrity: ${integrity}, tarball: ${ghTarball('@revt-eng/sdk', sdk)}}`, '    peerDependencies:', "      react: '>=19'", '',
+  '  drizzle-orm@0.45.2:', '    resolution: {integrity: sha512-drizzle}', '',
+  '  react@19.2.7:', '    resolution: {integrity: sha512-react}', '',
+  '  zod@4.0.0:', '    resolution: {integrity: sha512-zod}', '', 'snapshots:', '',
+  "  '@revt-eng/core@1.0.0-rl.7.2(drizzle-orm@0.45.2)':", '    dependencies:',
+  ...(optionalPeer ? ['      zod: 4.0.0', '    optionalDependencies:', '      drizzle-orm: 0.45.2'] : ['      drizzle-orm: 0.45.2', '      zod: 4.0.0']), '',
+  `  '@revt-eng/sdk@${sdk}(react@19.2.7)':`, '    dependencies:', '      react: 19.2.7', '',
+  ...(drizzleOptional ? ['  drizzle-orm@0.45.2:', '    optional: true'] : ['  drizzle-orm@0.45.2: {}']), '',
+  '  react@19.2.7: {}', '', '  zod@4.0.0: {}', '',
+].join('\n');
+
+test('a pnpm pin may change which peers of a @revt-eng entry are optional, and nothing that does not follow from it', () => {
+  const pins = [{ name: '@revt-eng/core', version: '1.0.0-rl.7.2' }, { name: '@revt-eng/sdk', version: '1.4.0' }];
+  const registry = new Map([['@revt-eng/core', {}], ['@revt-eng/sdk', { '1.4.0': { integrity: 'sha512-new', tarball: ghTarball('@revt-eng/sdk', '1.4.0') } }]]);
+  const before = peerLock();
+  const after = (options) => peerLock({ sdk: '1.4.0', integrity: 'sha512-new', optionalPeer: true, ...options });
+  const refusal = (from, to, withPins = pins) => pnpmLockRefusal('pnpm-lock.yaml', from, to, withPins, registry);
+  // The failing pin: the SDK moves; core, pinned at the version it already has, gains its optional peer, its snapshot
+  // moves that peer to optionalDependencies, and drizzle-orm, now reached only through it, becomes optional.
+  assert.equal(refusal(before, after()), null);
+  // The other direction (the registry's form again), and the same when the package is not one of the pins.
+  assert.equal(refusal(after({ sdk: '1.3.0', integrity: 'sha512-old' }), peerLock({ sdk: '1.4.0', integrity: 'sha512-new' })), null);
+  assert.equal(refusal(before, after(), [pins[1]]), null);
+  // Still refused: the entry's resolution or peers changing with it.
+  assert.match(refusal(before, after({ coreIntegrity: 'sha512-forged' })), /packages @revt-eng\/core@1\.0\.0-rl\.7\.2 changes more than which of its peers are optional/);
+  assert.match(refusal(before, after().replace("      drizzle-orm: '>=0.30.0'\n    peerDependenciesMeta", "      drizzle-orm: '*'\n    peerDependenciesMeta")), /changes more than which of its peers are optional/);
+  assert.match(refusal(before, after().replace('        optional: true\n', '        optional: true\n    hasBin: true\n')), /changes more than which of its peers are optional/);
+  assert.match(refusal(before, after().replace('      drizzle-orm:\n        optional: true', '      evil:\n        optional: true')), /marks evil optional, which is not one of its peers/);
+  assert.match(refusal(before, after().replace('      drizzle-orm:\n        optional: true', '      drizzle-orm:\n        optional: true\n        evil: true')), /more than optional flags/);
+  // Still refused: the same change on a package from another registry.
+  assert.match(refusal(before, after().replace('    resolution: {integrity: sha512-react}', '    resolution: {integrity: sha512-react}\n    peerDependenciesMeta:\n      x:\n        optional: true')), /packages react@19\.2\.7 changes/);
+  // Still refused: a snapshot whose edges change, or move without the peer's flag changing.
+  assert.match(refusal(before, after().replace('    optionalDependencies:\n      drizzle-orm: 0.45.2', '    optionalDependencies:\n      drizzle-orm: 0.45.3')), /snapshots @revt-eng\/core@1\.0\.0-rl\.7\.2\(drizzle-orm@0\.45\.2\) changes/);
+  assert.match(refusal(before, after().replace('      zod: 4.0.0\n    optionalDependencies:\n      drizzle-orm: 0.45.2', '    optionalDependencies:\n      drizzle-orm: 0.45.2\n      zod: 4.0.0')), /moves zod between dependencies and optionalDependencies/);
+  assert.match(refusal(before, after().replace('      zod: 4.0.0\n    optionalDependencies:', '      zod: 4.0.0\n      evil: 1.0.0\n    optionalDependencies:')), /snapshots @revt-eng\/core@1\.0\.0-rl\.7\.2\(drizzle-orm@0\.45\.2\) changes/);
+  assert.match(refusal(before, peerLock({ sdk: '1.4.0', integrity: 'sha512-new' }).replace('      drizzle-orm: 0.45.2\n      zod: 4.0.0', '      zod: 4.0.0\n    optionalDependencies:\n      drizzle-orm: 0.45.2')), /moves drizzle-orm between dependencies and optionalDependencies/);
+  // Still refused: `optional: true` where the lockfile's own graph does not put it, and any other change to a snapshot.
+  assert.match(refusal(before, after().replace('  react@19.2.7: {}', '  react@19.2.7:\n    optional: true')), /snapshots react@19\.2\.7 changes whether it is optional/);
+  assert.match(refusal(before, peerLock({ sdk: '1.4.0', integrity: 'sha512-new', drizzleOptional: true })), /snapshots drizzle-orm@0\.45\.2 changes whether it is optional/);
+  assert.match(refusal(before, after().replace('  zod@4.0.0: {}', '  zod@4.0.0:\n    dependencies:\n      react: 19.2.7')), /snapshots zod@4\.0\.0 changes/);
+  assert.match(refusal(before, after().replace('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2:\n    optional: true\n    hasBin: true')), /snapshots drizzle-orm@0\.45\.2 changes/);
+});

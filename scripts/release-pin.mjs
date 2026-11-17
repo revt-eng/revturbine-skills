@@ -631,11 +631,111 @@ function packageKey(key) {
   return { name: key.slice(0, at), version: paren < 0 ? rest : rest.slice(0, paren) };
 }
 
+/** The `name: value` lines of a mapping block, one indentation in: name -> value, both unquoted. */
+function yamlPairs(block, indent) {
+  const pairs = new Map();
+  const unquote = (value) => value.trim().replace(/^'(.*)'$|^"(.*)"$/, (all, single, double) => single ?? double);
+  for (const item of block ? yamlBlocks(block.lines.slice(1), indent) : []) {
+    if (item.key !== null) pairs.set(item.key, unquote(item.lines[0].replace(/^\s*(?:'(?:[^']|'')*'|"[^"]*"|[^:]*):/, '')));
+  }
+  return pairs;
+}
+/** The fields of a packages or snapshots entry (resolution, peerDependencies, dependencies, ...), by name. */
+const entryFields = (block) => byKey(yamlBlocks(block.lines.slice(1), 4));
+
+/**
+ * The peers a packages entry marks optional, as { names } or { refusal }: peerDependenciesMeta may hold nothing but
+ * `optional: true|false` for peers the entry declares in peerDependencies.
+ */
+function optionalPeers(block) {
+  const fields = entryFields(block);
+  const declared = yamlPairs(fields.get('peerDependencies'), 6);
+  const names = new Set();
+  for (const meta of fields.has('peerDependenciesMeta') ? yamlBlocks(fields.get('peerDependenciesMeta').lines.slice(1), 6) : []) {
+    const body = meta.lines.slice(1).map((line) => line.trim()).filter(Boolean);
+    if (meta.key === null || !/:\s*$/.test(meta.lines[0]) || body.length !== 1 || !/^optional: (true|false)$/.test(body[0])) return { refusal: 'gives peerDependenciesMeta more than optional flags' };
+    if (!declared.has(meta.key)) return { refusal: `marks ${meta.key} optional, which is not one of its peers` };
+    if (body[0] === 'optional: true') names.add(meta.key);
+  }
+  return { names };
+}
+
+/**
+ * Why a packages entry that keeps its key may not change from `a` to `b`, or null. Only a GitHub Packages package
+ * (@revt-eng/*) may, and only in peerDependenciesMeta: that registry's metadata omits the field, so pnpm writes an
+ * entry without it when it resolves the version from the registry and with it when it reads the manifest from the
+ * tarball of an entry the lockfile already has. The key (name and version), the resolution (integrity and tarball),
+ * the peers and every other field stay byte for byte.
+ */
+function packagesEntryRefusal(key, a, b) {
+  const parsed = packageKey(key);
+  if (!parsed || !SCOPED.test(parsed.name) || a.lines[0].trimEnd() !== b.lines[0].trimEnd()) return 'changes';
+  const fieldsA = entryFields(a), fieldsB = entryFields(b);
+  for (const field of new Set([...fieldsA.keys(), ...fieldsB.keys()])) {
+    if (field === 'peerDependenciesMeta') continue;
+    if (!fieldsA.has(field) || !fieldsB.has(field) || blockText(fieldsA.get(field)) !== blockText(fieldsB.get(field))) return 'changes more than which of its peers are optional';
+  }
+  return optionalPeers(b).refusal ?? null;
+}
+
+/** A snapshots entry: its edges, whether it carries `optional: true`, and everything else as text. */
+function snapshotEntry(block) {
+  const fields = /:\s*\{\}\s*$/.test(block.lines[0]) ? new Map() : entryFields(block);
+  const flag = fields.has('optional') ? blockText(fields.get('optional')).trim() : null;
+  const rest = [...fields].filter(([field]) => !['dependencies', 'optionalDependencies'].includes(field) && !(field === 'optional' && flag === 'optional: true'));
+  return {
+    dependencies: yamlPairs(fields.get('dependencies'), 6),
+    optionalDependencies: yamlPairs(fields.get('optionalDependencies'), 6),
+    optional: flag === 'optional: true',
+    rest: rest.map(([, field]) => blockText(field)).join('\n'),
+  };
+}
+
+/** The snapshots key a dependency reference names (pnpm's refToRelative), or null for a link. */
+function snapshotKey(name, reference) {
+  if (reference.startsWith('link:')) return null;
+  if (reference.startsWith('@')) return reference;
+  const at = reference.indexOf('@'), colon = reference.indexOf(':'), bracket = reference.indexOf('(');
+  if (at >= 0 && (colon < 0 || at < colon) && (bracket < 0 || at < bracket)) return reference;
+  return `${name}@${reference}`;
+}
+
+/**
+ * The snapshots a lockfile's own graph requires: reachable from an importer's dependencies or devDependencies through
+ * snapshots' dependencies. pnpm marks every other snapshot `optional: true`.
+ */
+export function requiredSnapshots(importers, snapshots) {
+  const queue = [];
+  for (const importer of importers.values()) {
+    const fields = entryFields(importer);
+    for (const field of ['dependencies', 'devDependencies']) {
+      for (const dep of fields.has(field) ? yamlBlocks(fields.get(field).lines.slice(1), 6) : []) {
+        const version = yamlPairs(dep, 8).get('version');
+        if (dep.key !== null && version !== undefined) queue.push(snapshotKey(dep.key, version));
+      }
+    }
+  }
+  const required = new Set();
+  while (queue.length) {
+    const key = queue.pop();
+    if (key === null || required.has(key) || !snapshots.has(key)) continue;
+    required.add(key);
+    for (const [name, reference] of snapshotEntry(snapshots.get(key)).dependencies) queue.push(snapshotKey(name, reference));
+  }
+  return required;
+}
+
 /**
  * A pnpm-lock.yaml change that only re-pins: every section but importers, packages and snapshots unchanged; in the
  * importers only the pinned packages' specifier and version change (the version to exactly the pin, peers allowed);
  * in packages and snapshots only the pinned packages' entries go and come, the new ones exactly at the pin, and a
  * new packages entry's resolution is the registry's.
+ *
+ * An entry that stays may change in one way, which pnpm does on its own whenever it runs (packagesEntryRefusal): which
+ * peers of a @revt-eng package are optional. What follows from that is allowed and nothing else: in that package's
+ * snapshots, exactly the peers whose flag differs move between dependencies and optionalDependencies, at the same
+ * versions; and a snapshot gains or loses `optional: true` only when the new lockfile's own graph says so
+ * (requiredSnapshots). No entry is added, dropped or resolved differently by it.
  */
 export function pnpmLockRefusal(file, beforeText, afterText, pins, registry) {
   const pinned = new Map(pins.map((pin) => [pin.name, pin.version]));
@@ -675,12 +775,34 @@ export function pnpmLockRefusal(file, beforeText, afterText, pins, registry) {
       }
     }
   }
+  const entries = (lock, section) => (lock.get(section) ? level(lock.get(section), 2) : new Map());
+  const packagesA = entries(before, 'packages'), packagesB = entries(after, 'packages');
+  const flips = [];
+  /** Why a snapshots entry that keeps its key may not change, or null; `flips` collects a changed `optional: true`. */
+  const snapshotRefusal = (key, blockA, blockB) => {
+    const a = snapshotEntry(blockA), b = snapshotEntry(blockB);
+    const edges = (entry) => canonical([...entry.dependencies, ...entry.optionalDependencies].sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)));
+    const twice = (entry) => [...entry.optionalDependencies.keys()].some((name) => entry.dependencies.has(name));
+    if (a.rest !== b.rest || twice(a) || twice(b) || edges(a) !== edges(b)) return 'changes';
+    const moved = [...b.dependencies.keys(), ...b.optionalDependencies.keys()].filter((name) => a.optionalDependencies.has(name) !== b.optionalDependencies.has(name));
+    if (moved.length) {
+      const parsed = packageKey(key);
+      const entry = parsed && SCOPED.test(parsed.name) ? `${parsed.name}@${parsed.version}` : null;
+      if (!entry || !packagesA.has(entry) || !packagesB.has(entry)) return 'changes';
+      const was = optionalPeers(packagesA.get(entry)).names, now = optionalPeers(packagesB.get(entry)).names;
+      const stray = moved.find((name) => !was || !now || was.has(name) !== a.optionalDependencies.has(name) || now.has(name) !== b.optionalDependencies.has(name));
+      if (stray !== undefined) return `moves ${stray} between dependencies and optionalDependencies, which its peers' optional flags do not explain`;
+    }
+    if (a.optional !== b.optional) flips.push(key);
+    return null;
+  };
   for (const section of ['packages', 'snapshots']) {
-    const a = before.get(section) ? level(before.get(section), 2) : new Map();
-    const b = after.get(section) ? level(after.get(section), 2) : new Map();
+    const a = entries(before, section), b = entries(after, section);
     for (const [key, block] of a) {
       if (b.has(key)) {
-        if (blockText(block) !== blockText(b.get(key))) return `${file}: ${section} ${key} changes`;
+        if (blockText(block) === blockText(b.get(key))) continue;
+        const refused = section === 'packages' ? packagesEntryRefusal(key, block, b.get(key)) : snapshotRefusal(key, block, b.get(key));
+        if (refused) return `${file}: ${section} ${key} ${refused}`;
         continue;
       }
       const parsed = packageKey(key);
@@ -697,6 +819,12 @@ export function pnpmLockRefusal(file, beforeText, afterText, pins, registry) {
       const refused = resolutionRefusal(`${file} packages ${key}`, parsed.name, parsed.version, integrity, tarball, registry);
       if (refused) return refused;
     }
+  }
+  if (flips.length) {
+    const snapshots = entries(after, 'snapshots');
+    const required = requiredSnapshots(importersB, snapshots);
+    const stray = flips.find((key) => snapshotEntry(snapshots.get(key)).optional === required.has(key));
+    if (stray !== undefined) return `${file}: snapshots ${stray} changes whether it is optional, which the lockfile's dependencies do not explain`;
   }
   return null;
 }
