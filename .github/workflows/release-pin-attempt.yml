@@ -16,6 +16,14 @@ on:
       attempt:
         type: number
         required: true
+    secrets:
+      # The push App's key is an environment secret of ci-push. A called workflow's secrets context holds only
+      # what its caller passes, and a secret nobody passed reads as empty even in a job that declares the
+      # environment, so release-pin.yml passes this name. Only the push job receives the key: it declares the
+      # environment, whose secret takes precedence over the value passed (empty: no repository or organization
+      # secret has this name). The pin job declares no environment and reads no secret, so it cannot get it.
+      CI_PUSH_APP_PRIVATE_KEY:
+        required: false
     outputs:
       moved:
         description: "'true' when this attempt pushed nothing and the next should try again: the branch moved, or a pinned package's registry entry could not be read"
