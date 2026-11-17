@@ -19,7 +19,8 @@
 //          A prerelease pinned over a range records the range in
 //          .release-pins.json at the root of the Release branch, so the final
 //          version, pinned at the merge walk, gets the range back (and the record
-//          is removed; the file goes when it is empty). A pin never moves back:
+//          is removed; the file goes when it is empty, and an empty one on the
+//          branch goes with any pin). A pin never moves back:
 //          two builds of this Release compare by build number <k> (a reverted
 //          version bump makes a newer build's version lower), anything else by
 //          semver, and a release below a range's lower bound is refused. After
@@ -27,7 +28,9 @@
 //          version. A directory with its own lockfile, or a member of a pnpm
 //          workspace, gets the package manager's exact add (then, for a range, a
 //          lockfile-only install after the range is written back); a manifest no
-//          lockfile covers gets its specifier set. Lifecycle scripts never run.
+//          lockfile covers gets its specifier set. Each manifest it pins ends as
+//          the branch's text with only the pinned specifiers replaced, whatever
+//          the package manager rewrote in it. Lifecycle scripts never run.
 //          Writes the changed files and the commit message to --out, and refuses
 //          a change outside manifests, lockfiles and pnpm-workspace.yaml (pnpm 11
 //          records a just-published version there). With --bundle <dir> it also
@@ -43,11 +46,14 @@
 //          bare repository holding only the branch head (--git-dir, --tip) and
 //          the bundle, it checks that the bundle was pinned on that head (else
 //          prints {"moved":true}), that it holds only pinnable files, that each
-//          package.json differs from the head only in the dependencies being
-//          pinned, each set to what `apply` would write, that .release-pins.json
-//          and pnpm-workspace.yaml change only for the pinned packages, that the
-//          records it leaves are exactly the ones apply leaves (none missing, none
-//          stale), and that the pins are the ones it was given. It then writes the commit with git
+//          package.json is the head's text with only the pinned dependencies'
+//          specifiers replaced, each by what `apply` would write, that a
+//          package-lock.json is the text npm writes, that pnpm-workspace.yaml
+//          changes only for the pinned packages, that .release-pins.json is a
+//          regular file and ends as exactly the bytes apply writes for exactly
+//          the records apply leaves, and that the pins are the ones it was given.
+//          Every lockfile entry at a pinned version is held to the registry,
+//          whether the pin adds it or the branch had it. It then writes the commit with git
 //          plumbing (no checkout, no hooks) and prints {"sha":...}. Author and
 //          committer come from GIT_AUTHOR_* / GIT_COMMITTER_*. Lockfile entries are
 //          checked against the registry; if a pinned package's registry entry
@@ -443,9 +449,14 @@ export function apply({ root, pins, release, run = spawnSync }) {
       continue;
     }
     const file = path.join(root, dir, 'package.json');
+    // The manifest ends as the branch's text with only the pinned specifiers replaced (what the push job checks),
+    // whatever else the package manager rewrites in it.
+    const original = readFileSync(file, 'utf8');
+    const written = substituteSpecifiers(original, pending.map((entry) => ({ name: entry.name, from: entry.current, to: entry.spec })));
+    if (written === null) throw new Error(`${dir}/package.json does not hold each pinned specifier exactly once as "<name>": "<specifier>"; pin it by hand`);
     const owner = ownerOf(root, dir);
     if (!owner.pm) {
-      for (const entry of pending) setSpecifier(file, entry.field, entry.name, entry.spec);
+      writeFileSync(file, written);
       console.log(`${dir}: no lockfile covers it; set ${pending.map((e) => `${e.name}@${e.spec}`).join(', ')} in package.json`);
       continue;
     }
@@ -463,14 +474,15 @@ export function apply({ root, pins, release, run = spawnSync }) {
       const locked = lockedVersion(lock, entry.name);
       if (locked !== entry.version) throw new Error(`${owner.lock} resolves ${entry.name} to ${locked ?? 'nothing'} for ${dir}, not the pinned ${entry.version}`);
     }
+    writeFileSync(file, written);
   }
 
   const pinsFile = path.join(root, PINS_FILE);
   const recordsChanged = JSON.stringify(records) !== recordsBefore;
-  if (recordsChanged) {
-    if (Object.keys(records).length) writeFileSync(pinsFile, `${JSON.stringify(records, null, 2)}\n`);
-    else if (existsSync(pinsFile)) rmSync(pinsFile);
-  }
+  // The file exists exactly when there is a record: an empty one on the branch goes with any pin.
+  if (Object.keys(records).length) {
+    if (recordsChanged) writeFileSync(pinsFile, recordsText(records));
+  } else if (existsSync(pinsFile)) rmSync(pinsFile);
 
   for (const [dir, entries] of targets) {
     const manifest = JSON.parse(readFileSync(path.join(root, dir, 'package.json'), 'utf8'));
@@ -530,20 +542,70 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 
+/** The first key that appears twice in one object of a JSON text JSON.parse took, or null (JSON.parse keeps the last). */
+export function duplicateJsonKey(text) {
+  const stack = [];
+  let expectKey = false;
+  for (let at = 0; at < text.length; at += 1) {
+    const char = text[at];
+    if (char === '"') {
+      let end = at + 1;
+      while (text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+      const top = stack.at(-1);
+      if (top instanceof Set && expectKey) {
+        const key = JSON.parse(text.slice(at, end + 1));
+        if (top.has(key)) return key;
+        top.add(key);
+        expectKey = false;
+      }
+      at = end;
+    } else if (char === '{') {
+      stack.push(new Set());
+      expectKey = true;
+    } else if (char === '[') stack.push(null);
+    else if (char === '}' || char === ']') stack.pop();
+    else if (char === ',') expectKey = stack.at(-1) instanceof Set;
+  }
+  return null;
+}
+
+/**
+ * A package.json text with each pinned specifier replaced in place: the one `"<name>": "<from>"` pair in the text (both
+ * strings as JSON.stringify writes them) gets `"<to>"` as its value, and every other byte stays. Null when a pair is not
+ * in the text exactly once (written another way, or twice), which a person pins by hand.
+ * @param {string} text
+ * @param {{ name: string, from: string, to: string }[]} changes
+ */
+export function substituteSpecifiers(text, changes) {
+  let out = text;
+  for (const { name, from, to } of changes) {
+    const pattern = new RegExp(`(${escapeRe(JSON.stringify(name))}[ \\t\\r\\n]*:[ \\t\\r\\n]*)${escapeRe(JSON.stringify(from))}`, 'g');
+    const found = [...out.matchAll(pattern)];
+    if (found.length !== 1) return null;
+    const at = found[0].index + found[0][1].length;
+    out = `${out.slice(0, at)}${JSON.stringify(to)}${out.slice(at + JSON.stringify(from).length)}`;
+  }
+  return out;
+}
+
 /**
  * Refusal unless `after` differs from `before` only in the pinned dependencies, each in the field it already had and
- * set to what `apply` writes for it (planPin with the head's record); null when it is a pin.
+ * set to what `apply` writes for it (planPin with the head's record); null when it is a pin. The text is compared too:
+ * it must be the branch's text with only those specifiers replaced (substituteSpecifiers, which is also how apply
+ * writes it), so a duplicate key, a reformat or an escape the parsed value hides is refused.
  */
 export function manifestPinRefusal(file, beforeText, afterText, pins, n, records) {
   let before, after;
   try { before = JSON.parse(beforeText); after = JSON.parse(afterText); } catch { return `${file} is not JSON`; }
+  const twice = duplicateJsonKey(afterText);
+  if (twice !== null) return `${file} has the key ${JSON.stringify(twice)} twice in one object`;
   const masked = (manifest) => {
     const copy = JSON.parse(JSON.stringify(manifest));
     for (const field of FIELDS) for (const pin of pins) if (copy[field] && Object.hasOwn(copy[field], pin.name)) copy[field][pin.name] = '<pinned>';
     return canonical(copy);
   };
   if (masked(before) !== masked(after)) return `${file} changes more than the pinned dependencies`;
-  let changed = false;
+  const changes = [];
   for (const field of FIELDS) {
     for (const pin of pins) {
       if (!before[field] || !Object.hasOwn(before[field], pin.name)) continue;
@@ -553,10 +615,13 @@ export function manifestPinRefusal(file, beforeText, afterText, pins, n, records
       if (backwards) return backwards;
       const { spec } = planPin(current, pin.version, records[file]?.[pin.name]);
       if (now !== spec) return `${file} sets ${pin.name} to ${now}, not the pin's ${spec}`;
-      changed = true;
+      changes.push({ name: pin.name, from: current, to: now });
     }
   }
-  return changed ? null : `${file} is in the bundle but pins nothing`;
+  if (!changes.length) return `${file} is in the bundle but pins nothing`;
+  const expected = substituteSpecifiers(beforeText, changes);
+  if (expected === null) return `${file} does not hold each pinned specifier exactly once as "<name>": "<specifier>", so the pin cannot be checked as a text change; pin it by hand`;
+  return afterText === expected ? null : `${file} is not the branch's file with only the pinned specifiers replaced`;
 }
 
 /**
@@ -643,6 +708,13 @@ export function npmLockRefusal(file, beforeText, afterText, pins, registry) {
   let before, after;
   try { before = JSON.parse(beforeText); after = JSON.parse(afterText); } catch { return `${file} is not JSON`; }
   if (before.lockfileVersion !== 3 || after.lockfileVersion !== 3) return `${file} is not lockfileVersion 3, so its pin cannot be checked`;
+  // npm writes the lockfile as JSON.stringify with the file's indentation, line ending and a final newline: anything
+  // else (a duplicate key, a reformat, an escape) is not what npm wrote.
+  const twice = duplicateJsonKey(afterText);
+  if (twice !== null) return `${file} has the key ${JSON.stringify(twice)} twice in one object`;
+  const indent = /^([ \t]+)"/m.exec(beforeText)?.[1] ?? '', eol = beforeText.includes('\r\n') ? '\r\n' : '\n';
+  const written = `${JSON.stringify(after, null, indent)}${beforeText.endsWith('\n') ? '\n' : ''}`.replace(/\n/g, eol);
+  if (afterText !== written) return `${file} is not written as npm writes it (JSON.stringify with the branch file's indentation and line ending)`;
   const rest = (lock) => { const others = { ...lock }; delete others.packages; return canonical(others); };
   if (rest(before) !== rest(after)) return `${file} changes more than its packages`;
   const was = before.packages ?? {}, now = after.packages ?? {};
@@ -1112,20 +1184,17 @@ function snapshotKey(name, reference) {
  * A parsed lockfile's own dependency graph, from its importers and snapshots sections:
  *   required    the snapshots reachable from an importer's dependencies or devDependencies through snapshots'
  *               dependencies; pnpm marks every other snapshot `optional: true`;
- *   reachable   the snapshots reachable from any importer dependency through snapshots' dependencies and
- *               optionalDependencies: the ones in use, whatever else in the file names them;
  *   referenced  every snapshot an importer or a snapshot depends on, optionally or not;
  *   dangling    a referenced key the lockfile has no snapshot for, or undefined.
  */
 export function lockGraph(importers, snapshots) {
-  const roots = [], all = [], referenced = new Set(), edges = new Map(), optionalEdges = new Map();
+  const roots = [], referenced = new Set(), edges = new Map();
   for (const importer of importers.values()) {
     for (const field of DEP_FIELDS) {
       for (const [name, dep] of mapOf(importer.get(field))) {
         const version = mapOf(dep).get('version'), key = typeof version === 'string' ? snapshotKey(name, version) : null;
         if (key === null) continue;
         referenced.add(key);
-        all.push(key);
         if (field !== 'optionalDependencies') roots.push(key);
       }
     }
@@ -1134,22 +1203,16 @@ export function lockGraph(importers, snapshots) {
     const { dependencies, optionalDependencies } = edgesOf(entry);
     const keys = (pairs) => [...pairs].map(([name, reference]) => snapshotKey(name, reference)).filter((target) => target !== null);
     edges.set(key, keys(dependencies));
-    optionalEdges.set(key, keys(optionalDependencies));
-    for (const target of [...edges.get(key), ...optionalEdges.get(key)]) referenced.add(target);
+    for (const target of [...edges.get(key), ...keys(optionalDependencies)]) referenced.add(target);
   }
-  const walk = (start, next) => {
-    const seen = new Set();
-    while (start.length) {
-      const key = start.pop();
-      if (seen.has(key) || !edges.has(key)) continue;
-      seen.add(key);
-      start.push(...next(key));
-    }
-    return seen;
-  };
-  const required = walk(roots, (key) => edges.get(key));
-  const reachable = walk(all, (key) => [...edges.get(key), ...optionalEdges.get(key)]);
-  return { required, reachable, referenced, dangling: [...referenced].find((key) => !snapshots.has(key)) };
+  const required = new Set();
+  while (roots.length) {
+    const key = roots.pop();
+    if (required.has(key) || !edges.has(key)) continue;
+    required.add(key);
+    roots.push(...edges.get(key));
+  }
+  return { required, referenced, dangling: [...referenced].find((key) => !snapshots.has(key)) };
 }
 /** The snapshots a lockfile's own graph requires (lockGraph). */
 export const requiredSnapshots = (importers, snapshots) => lockGraph(importers, snapshots).required;
@@ -1170,7 +1233,7 @@ export const requiredSnapshots = (importers, snapshots) => lockGraph(importers, 
  * move between dependencies and optionalDependencies, at the same references; and a snapshot gains or loses
  * `optional: true` only when the new lockfile's own graph says so (lockGraph). In the new lockfile every edge names a
  * snapshot it has, and something depends on every snapshot the pin adds. An entry of a pinned package at its pin
- * that the branch held without any importer reaching it is checked as if the pin added it.
+ * that the branch already held is checked as if the pin added it.
  */
 export function pnpmLockRefusal(file, beforeText, afterText, pins, registry, manifests = new Map()) {
   const malformed = pnpmFormRefusal(`${file} on the branch`, beforeText) ?? pnpmFormRefusal(file, afterText);
@@ -1209,8 +1272,8 @@ export function pnpmLockRefusal(file, beforeText, afterText, pins, registry, man
   }
   const packagesA = section(before, 'packages'), packagesB = section(after, 'packages');
   const snapshotsA = section(before, 'snapshots'), snapshotsB = section(after, 'snapshots');
-  /** The snapshots whose `optional: true` must be the graph's: the ones that changed it, the ones the pin adds, and the ones it brings into use. */
-  const flips = [], added = [], revived = [];
+  /** The snapshots whose `optional: true` must be the graph's: the ones that changed it, the ones the pin adds, and the branch's at the pin. */
+  const flips = [], added = [], held = [];
   /** Why a snapshots entry that keeps its key may not change, or null; `flips` collects a changed `optional: true`. */
   const snapshotRefusal = (key, entryA, entryB) => {
     const a = edgesOf(entryA), b = edgesOf(entryB);
@@ -1291,27 +1354,22 @@ export function pnpmLockRefusal(file, beforeText, afterText, pins, registry, man
       added.push(key);
     }
   }
-  // An entry of a pinned package at its pin that the branch already held, and that no importer of the branch reached,
-  // is the pin's in all but name: the pin is what brings it into use. It is held to the same rules. Reached means
-  // through the importers' dependencies and the snapshots' dependencies and optionalDependencies (lockGraph's
-  // reachable): another unused snapshot naming it, or the entry naming itself, does not put it in use.
-  const headGraph = lockGraph(importersA, snapshotsA), headOwners = new Set();
-  for (const key of headGraph.reachable) {
-    const parsed = packageKey(key);
-    if (parsed) headOwners.add(`${parsed.name}@${parsed.version}`);
-  }
+  // An entry of a pinned package at its pin that the branch already held is held to the same rules as one the pin adds,
+  // whether or not the branch used it: what the branch holds at the pinned version is not trusted, because whether
+  // anything on the branch really installs an entry (a platform-skipped optional dependency, an importer that is no
+  // workspace project, an alias) is more than this check reads. A genuine entry passes these rules either way.
   for (const [name, version] of pinned) {
     const owner = `${name}@${version}`, declared = registry?.get(name)?.[version];
-    if (packagesA.has(owner) && packagesB.has(owner) && !headOwners.has(owner)) {
+    if (packagesA.has(owner) && packagesB.has(owner)) {
       const shaped = newPackageRefusal(owner, packageKey(owner), packagesB.get(owner), declared, manifests);
-      if (shaped) return `${file}: packages ${owner}, which no importer on the branch reached, ${shaped}`;
+      if (shaped) return `${file}: packages ${owner}, which the branch already had, ${shaped}`;
     }
     for (const key of headKeys.get(name) ?? []) {
       const parsed = packageKey(key);
-      if (parsed.version !== version || !snapshotsB.has(key) || headGraph.reachable.has(key)) continue;
+      if (parsed.version !== version || !snapshotsB.has(key)) continue;
       const refused = snapshotAtPinRefusal(key, parsed, snapshotsB.get(key), declared);
-      if (refused) return `${file}: snapshots ${key}, which no importer on the branch reached, ${refused}`;
-      revived.push(key);
+      if (refused) return `${file}: snapshots ${key}, which the branch already had, ${refused}`;
+      held.push(key);
     }
   }
   // A pinned package resolves from its registry whether the pin adds its entry or the branch already had one.
@@ -1326,26 +1384,28 @@ export function pnpmLockRefusal(file, beforeText, afterText, pins, registry, man
   if (graph.dangling !== undefined) return `${file}: ${graph.dangling} is depended on, and the lockfile has no snapshot of it`;
   const orphan = added.find((key) => !graph.referenced.has(key));
   if (orphan !== undefined) return `${file}: snapshots adds ${orphan}, which nothing depends on`;
-  const stray = [...flips, ...added, ...revived].find((key) => (snapshotsB.get(key).get('optional') === true) === graph.required.has(key));
+  const stray = [...flips, ...added, ...held].find((key) => (snapshotsB.get(key).get('optional') === true) === graph.required.has(key));
   if (stray !== undefined) return `${file}: snapshots ${stray} ${flips.includes(stray) ? 'changes whether it is' : 'is'} optional, which the lockfile's dependencies do not explain`;
   return null;
 }
 
 /**
  * The @revt-eng packages entries of a new pnpm-lock.yaml whose optional peers have to be checked against the package
- * itself: entries with a peerDependenciesMeta the branch head's lockfile does not have in that form. Each is
+ * itself: entries with a peerDependenciesMeta the branch head's lockfile does not have in that form, and every entry of
+ * a pinned package at its pin that has one (the check holds those to the new-entry rules even when the branch had them). Each is
  * { key, integrity, tarball }, taken from the entry's resolution, and only when the key is a name and an exact
  * version, the integrity a sha512 and the tarball the GitHub Packages download of exactly that name and version;
  * anything else is left out and so refused by the check. At most 32.
  */
-export function peerMetaToVerify(beforeText, afterText) {
+export function peerMetaToVerify(beforeText, afterText, pins = []) {
+  const atPin = new Set(pins.map((pin) => `${pin.name}@${pin.version}`));
   const before = parsePnpmLock(beforeText).lock, after = parsePnpmLock(afterText).lock;
   if (!before || !after) return [];
   const was = mapOf(before.get('packages')), entries = [];
   for (const [key, entry] of mapOf(after.get('packages'))) {
     const parsed = packageKey(key), meta = entry.get('peerDependenciesMeta');
     if (!parsed || parsed.suffix || !SCOPED.test(parsed.name) || !meta) continue;
-    if (was.has(key) && was.get(key).has('peerDependenciesMeta') && sameValue(was.get(key).get('peerDependenciesMeta'), meta)) continue;
+    if (!atPin.has(key) && was.has(key) && was.get(key).has('peerDependenciesMeta') && sameValue(was.get(key).get('peerDependenciesMeta'), meta)) continue;
     const resolution = mapOf(entry.get('resolution')), integrity = resolution.get('integrity'), tarball = resolution.get('tarball');
     if (/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(integrity ?? '') && downloadUrl(parsed.name, parsed.version).test(tarball ?? '')) entries.push({ key, integrity, tarball });
   }
@@ -1422,52 +1482,62 @@ export function recordsRefusal(beforeRecords, afterText, pins, rangeAtHead = () 
   return null;
 }
 
+/** The bytes `apply` writes for a set of records: JSON with two-space indentation and a final newline. */
+export const recordsText = (records) => `${JSON.stringify(records, null, 2)}\n`;
+
 /**
- * Refusal unless the records a bundle leaves are exactly the ones `apply` leaves; null when they are. recordsRefusal
- * checks each record that changes; this checks that none is missing and none is stale:
+ * Refusal unless the records a bundle leaves are exactly the ones `apply` leaves, byte for byte; null when they are.
+ * recordsRefusal checks each record that changes; this checks that none is missing and none is stale:
  *   - a prerelease pin that moves a manifest off a range the head holds, with no record of it, records that range
  *     (else the final pin could not restore it);
  *   - a final pin removes every record of the package it pins, and only from a manifest it restores: one that, after
  *     the bundle, holds the range the record gives back (or that no longer depends on the package on the head);
- *   - every other record stays as the head has it; the file goes when no record is left, and stays absent when the
- *     head has none and none is added.
+ *   - every other record stays as the head has it;
+ *   - the file the bundle writes is exactly recordsText of those records, in the order apply builds them (the head's,
+ *     then new ones by manifest path and pin), so a duplicate key, a reformat or an empty record object is refused;
+ *   - the file goes when no record is left (an empty `{}` file on the head goes too, as apply deletes it), and stays
+ *     absent when the head has none and none is added.
  * @param {Record<string, Record<string, string>>} headRecords the head's records ({} without the file)
- * @param {Record<string, Record<string, string>> | null} afterRecords the records after the bundle (null: no file)
+ * @param {boolean} headHasFile whether the head has the file
+ * @param {string | null | undefined} written the text the bundle writes, null when it deletes the file, undefined when
+ *   it leaves the file alone
  * @param {{ name: string, version: string }[]} pins
  * @param {(file: string) => object | null} headManifest a package.json on the head, parsed, or null
  * @param {Map<string, object>} bundled the package.json files the bundle writes, parsed, by path
  */
-export function recordsOutcomeRefusal(headRecords, afterRecords, pins, headManifest, bundled) {
+export function recordsOutcomeRefusal(headRecords, headHasFile, written, pins, headManifest, bundled) {
   const expected = JSON.parse(JSON.stringify(headRecords ?? {}));
   const drop = (file, name) => {
     const rest = Object.fromEntries(Object.entries(expected[file]).filter(([key]) => key !== name));
     if (Object.keys(rest).length) expected[file] = rest;
     else Reflect.deleteProperty(expected, file);
   };
-  for (const pin of pins) {
-    if (!isPrerelease(pin.version)) {
-      for (const file of Object.keys(expected)) {
-        const recorded = expected[file]?.[pin.name];
-        if (recorded === undefined) continue;
-        const head = headManifest(file), field = head ? dependencyField(head, pin.name) : null;
-        if (field) {
-          const now = (bundled.get(file) ?? head)?.[field]?.[pin.name];
-          let spec;
-          try { spec = planPin(head[field][pin.name], pin.version, recorded).spec; } catch (error) { return error.message; }
-          if (now !== spec) return `the final pin of ${pin.name} removes its record in ${PINS_FILE} for ${file} but leaves ${file} at ${now}, not the restored ${spec}`;
-        }
-        drop(file, pin.name);
-      }
-      continue;
-    }
-    for (const [file, after] of bundled) {
-      const head = headManifest(file), field = head ? dependencyField(head, pin.name) : null;
+  // Added records first, in apply's order: by manifest path, then by pin.
+  for (const file of [...bundled.keys()].sort()) {
+    const after = bundled.get(file), head = headManifest(file);
+    for (const pin of pins.filter((p) => isPrerelease(p.version))) {
+      const field = head ? dependencyField(head, pin.name) : null;
       if (!field || after?.[field]?.[pin.name] === head[field][pin.name]) continue;
       const { record } = planPin(head[field][pin.name], pin.version, expected[file]?.[pin.name]);
       if (record !== undefined) expected[file] = { ...expected[file], [pin.name]: record };
     }
   }
-  const actual = afterRecords ?? {};
+  for (const pin of pins.filter((p) => !isPrerelease(p.version))) {
+    for (const file of Object.keys(expected)) {
+      const recorded = expected[file]?.[pin.name];
+      if (recorded === undefined) continue;
+      const head = headManifest(file), field = head ? dependencyField(head, pin.name) : null;
+      if (field) {
+        const now = (bundled.get(file) ?? head)?.[field]?.[pin.name];
+        let spec;
+        try { spec = planPin(head[field][pin.name], pin.version, recorded).spec; } catch (error) { return error.message; }
+        if (now !== spec) return `the final pin of ${pin.name} removes its record in ${PINS_FILE} for ${file} but leaves ${file} at ${now}, not the restored ${spec}`;
+      }
+      drop(file, pin.name);
+    }
+  }
+  let actual;
+  try { actual = written === undefined ? headRecords ?? {} : written === null ? {} : JSON.parse(written); } catch { return `${PINS_FILE} is not JSON`; }
   for (const file of new Set([...Object.keys(expected), ...Object.keys(actual)])) {
     for (const name of new Set([...Object.keys(expected[file] ?? {}), ...Object.keys(actual[file] ?? {})])) {
       const want = expected[file]?.[name], have = actual[file]?.[name];
@@ -1477,7 +1547,9 @@ export function recordsOutcomeRefusal(headRecords, afterRecords, pins, headManif
       return `${PINS_FILE} records ${JSON.stringify(have)} for ${name} in ${file}, not ${JSON.stringify(want)}`;
     }
   }
-  if (afterRecords !== null && !Object.keys(expected).length) return `${PINS_FILE} is left with no record; the pin that removes the last record deletes the file`;
+  const empty = !Object.keys(expected).length;
+  if (empty && (typeof written === 'string' || (written === undefined && headHasFile))) return `${PINS_FILE} is left with no record; the pin that leaves no record deletes the file`;
+  if (typeof written === 'string' && written !== recordsText(expected)) return `${PINS_FILE} is not exactly the bytes apply writes for its records (two-space JSON, keys in apply's order, a final newline, nothing else)`;
   return null;
 }
 
@@ -1496,13 +1568,15 @@ export function commitBundle({ bundle, tip, pins, release, n, git, registry = ne
   const atTip = (file) => { try { return git(['cat-file', 'blob', `${tip}:${file}`]); } catch (error) { if (error?.tooLarge) throw error; return null; } };
   const tipRecordsText = atTip(PINS_FILE);
   const records = tipRecordsText === null ? {} : JSON.parse(tipRecordsText);
+  if (!records || typeof records !== 'object' || Array.isArray(records)) throw new Error(`${PINS_FILE} on the branch is not an object`);
   const rangeAtHead = (file, name) => {
     const text = atTip(file);
     if (text === null) return undefined;
     try { const manifest = JSON.parse(text), field = dependencyField(manifest, name); return field ? manifest[field][name] : undefined; } catch { return undefined; }
   };
   const entries = [], bundled = new Map();
-  let afterRecords = tipRecordsText === null ? null : records;
+  /** What the bundle does to PINS_FILE: undefined (leaves it), null (deletes it) or the text it writes. */
+  let written;
   for (const entry of files) {
     const file = entry?.path;
     if (!pinnablePath(file) || seen.has(file)) throw new Error(`refusing ${JSON.stringify(file)} in the bundle`);
@@ -1514,7 +1588,7 @@ export function commitBundle({ bundle, tip, pins, release, n, git, registry = ne
       const refused = recordsRefusal(records, null, pins, rangeAtHead);
       if (refused) throw new Error(refused);
       entries.push({ file, remove: true });
-      afterRecords = null;
+      written = null;
       continue;
     }
     if (entry.deleted !== false) throw new Error(`the bundle does not say whether ${file} was deleted`);
@@ -1529,14 +1603,18 @@ export function commitBundle({ bundle, tip, pins, release, n, git, registry = ne
     else if (name === 'pnpm-lock.yaml') refused = pnpmLockRefusal(file, before, after, pins, registry, manifests);
     else refused = `${file} is not a file a pin changes`;
     if (refused) throw new Error(refused);
-    if (file === PINS_FILE) afterRecords = JSON.parse(after);
+    if (file === PINS_FILE) written = after;
     else if (name === 'package.json') bundled.set(file, JSON.parse(after));
     const mode = before === null ? '100644' : git(['ls-tree', tip, '--', file]).split(/\s/)[0];
     if (mode !== '100644' && mode !== '100755') throw new Error(`${file} is not a regular file on the branch`);
     entries.push({ file, mode, blob: git(['hash-object', '-w', '--stdin'], after).trim() });
   }
+  // Whatever the branch has at PINS_FILE must be a regular file: cat-file reads a symlink's target or nothing for a
+  // gitlink or a directory, and the commit must not turn any of them into the records.
+  const pinsEntry = git(['ls-tree', tip, '--', PINS_FILE]).trim();
+  if (pinsEntry && !/^100(?:644|755) blob /.test(pinsEntry)) throw new Error(`${PINS_FILE} on the branch is not a regular file (${pinsEntry.split(/\s/)[0]}); fix it by hand`);
   const headManifest = (file) => { const text = atTip(file); if (text === null) return null; try { return JSON.parse(text); } catch { return null; } };
-  const outcome = recordsOutcomeRefusal(records, afterRecords, pins, headManifest, bundled);
+  const outcome = recordsOutcomeRefusal(records, tipRecordsText !== null, written, pins, headManifest, bundled);
   if (outcome) throw new Error(outcome);
   const index = path.join(bundle, '.index');
   rmSync(index, { force: true });
@@ -1648,7 +1726,7 @@ export function bundlePeerMeta(bundle, tip, git) {
     if (!pinnablePath(entry?.path) || path.posix.basename(entry.path) !== 'pnpm-lock.yaml' || entry.deleted !== false) continue;
     let before;
     try { before = git(['cat-file', 'blob', `${tip}:${entry.path}`]); } catch (error) { if (error?.tooLarge) throw error; continue; }
-    for (const found of peerMetaToVerify(before, readFileSync(path.join(bundle, 'files', entry.path), 'utf8'))) entries.set(`${found.key} ${found.integrity}`, found);
+    for (const found of peerMetaToVerify(before, readFileSync(path.join(bundle, 'files', entry.path), 'utf8'), Array.isArray(manifest.pins) ? manifest.pins : [])) entries.set(`${found.key} ${found.integrity}`, found);
   }
   return [...entries.values()].slice(0, 32);
 }

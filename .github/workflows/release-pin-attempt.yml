@@ -52,7 +52,7 @@ jobs:
           if [ "$ATTEMPT" -gt 1 ]; then sleep $((ATTEMPT * 5)); fi
 
       - name: Check out the pin script from the dispatched ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           path: trusted
           sparse-checkout: scripts/release-pin.mjs
@@ -63,14 +63,14 @@ jobs:
         run: node trusted/scripts/release-pin.mjs check --branch "$PIN_BRANCH" --packages "$PIN_PACKAGES"
 
       - name: Check out the Release branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: refs/heads/${{ inputs.branch }}
           path: work
           persist-credentials: false
 
       # Every dependency here comes from the public npm registry, so no GitHub Packages access.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
 
@@ -99,7 +99,7 @@ jobs:
 
       - name: Upload the bundle
         if: steps.pin.outputs.changed == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-pin-${{ inputs.attempt }}
           path: ${{ runner.temp }}/release-pin-bundle
@@ -131,7 +131,7 @@ jobs:
           fi
 
       - name: Check out the pin script from the dispatched ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           path: trusted
           sparse-checkout: scripts/release-pin.mjs
@@ -139,7 +139,7 @@ jobs:
           persist-credentials: false
 
       - name: Download the bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: release-pin-${{ inputs.attempt }}
           path: ${{ runner.temp }}/release-pin-bundle

