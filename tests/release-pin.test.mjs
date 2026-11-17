@@ -441,14 +441,15 @@ const pnpmLock = (version, integrity, { extraImporterLine = '', otherSnapshot = 
   "      '@revt-eng/sdk':", `        specifier: ${version}`, `        version: ${version}(react@19.2.7)`, ...(extraImporterLine ? [extraImporterLine] : []),
   '      react:', '        specifier: 19.2.7', '        version: 19.2.7', '', 'packages:', '',
   `  '@revt-eng/sdk@${version}':`, `    resolution: {integrity: ${integrity}, tarball: ${ghTarball('@revt-eng/sdk', version)}}`, '    peerDependencies:', "      react: '>=19'", '',
+  '  pure-rand@8.4.2:', '    resolution: {integrity: sha512-rand}', '',
   '  react@19.2.7:', '    resolution: {integrity: sha512-react}', '', 'snapshots:', '',
-  `  '@revt-eng/sdk@${version}(react@19.2.7)':`, '    dependencies:', `      ${otherSnapshot}`, '      react: 19.2.7', '', '  react@19.2.7: {}', '',
+  `  '@revt-eng/sdk@${version}(react@19.2.7)':`, '    dependencies:', `      ${otherSnapshot}`, '      react: 19.2.7', '', '  pure-rand@8.4.2: {}', '', '  react@19.2.7: {}', '',
 ].join('\n');
 
 test('a pnpm-lock.yaml may re-pin only the pinned importers, packages and snapshots', () => {
   const pins = [{ name: '@revt-eng/sdk', version: '1.4.0' }];
   const before = pnpmLock('1.3.0', 'sha512-old');
-  const registry = new Map([['@revt-eng/sdk', { '1.4.0': { integrity: 'sha512-new', tarball: ghTarball('@revt-eng/sdk', '1.4.0') } }]]);
+  const registry = new Map([['@revt-eng/sdk', { '1.4.0': { integrity: 'sha512-new', tarball: ghTarball('@revt-eng/sdk', '1.4.0'), dependencies: { 'pure-rand': '^8.0.0' }, peerDependencies: { react: '>=19' } } }]]);
   assert.equal(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new'), pins, registry), null);
   assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new'), pins, new Map()), /registry entry could not be read/, 'no registry entry, no pin');
   assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-forged'), pins, registry), /differs from the registry's/);
@@ -481,6 +482,10 @@ test('the registry entries are read per package, and an unreadable one stops the
 // it resolves the version from the registry and with them when it reads the manifest of an entry the lockfile already
 // has. A pin that moves one package therefore rewrites which peers of the others are optional (web RL-1, 2026-11-17:
 // "packages @revt-eng/core@0.1.562-rl.1.5 changes" when only the SDK moved from rl.1.4 to rl.1.5).
+import { gzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
+import { lockGraph, peerMetaToVerify, pnpmFormRefusal, readManifests, tarballManifest } from '../scripts/release-pin.mjs';
+
 const peerLock = ({ sdk = '1.3.0', integrity = 'sha512-old', optionalPeer = false, coreIntegrity = 'sha512-core', drizzleOptional = optionalPeer } = {}) => [
   "lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: true', '', 'importers:', '', '  .:', '    dependencies:',
   "      '@revt-eng/core':", '        specifier: 1.0.0-rl.7.2', '        version: 1.0.0-rl.7.2(drizzle-orm@0.45.2)',
@@ -498,35 +503,226 @@ const peerLock = ({ sdk = '1.3.0', integrity = 'sha512-old', optionalPeer = fals
   ...(drizzleOptional ? ['  drizzle-orm@0.45.2:', '    optional: true'] : ['  drizzle-orm@0.45.2: {}']), '',
   '  react@19.2.7: {}', '', '  zod@4.0.0: {}', '',
 ].join('\n');
+const peerPins = [{ name: '@revt-eng/core', version: '1.0.0-rl.7.2' }, { name: '@revt-eng/sdk', version: '1.4.0' }];
+const peerRegistry = new Map([
+  ['@revt-eng/core', { '1.0.0-rl.7.2': { integrity: 'sha512-core', tarball: ghTarball('@revt-eng/core', '1.0.0-rl.7.2'), dependencies: { zod: '^4.0.0' }, peerDependencies: { 'drizzle-orm': '>=0.30.0' } } }],
+  ['@revt-eng/sdk', { '1.4.0': { integrity: 'sha512-new', tarball: ghTarball('@revt-eng/sdk', '1.4.0'), dependencies: { zod: '^4.0.0' }, optionalDependencies: { fsevents: '*' }, peerDependencies: { react: '>=19' } } }],
+]);
+/** What the push job read from core's tarball: its package.json marks drizzle-orm optional. */
+const coreManifest = (meta = { 'drizzle-orm': { optional: true } }, integrity = 'sha512-core') => new Map([['@revt-eng/core@1.0.0-rl.7.2', { integrity, manifest: { name: '@revt-eng/core', peerDependenciesMeta: meta } }]]);
+const peerBefore = peerLock();
+const peerAfter = (options) => peerLock({ sdk: '1.4.0', integrity: 'sha512-new', optionalPeer: true, ...options });
+const peerRefusal = (from, to, { pins = peerPins, manifests = coreManifest() } = {}) => pnpmLockRefusal('pnpm-lock.yaml', from, to, pins, peerRegistry, manifests);
 
 test('a pnpm pin may change which peers of a @revt-eng entry are optional, and nothing that does not follow from it', () => {
-  const pins = [{ name: '@revt-eng/core', version: '1.0.0-rl.7.2' }, { name: '@revt-eng/sdk', version: '1.4.0' }];
-  const registry = new Map([['@revt-eng/core', {}], ['@revt-eng/sdk', { '1.4.0': { integrity: 'sha512-new', tarball: ghTarball('@revt-eng/sdk', '1.4.0') } }]]);
-  const before = peerLock();
-  const after = (options) => peerLock({ sdk: '1.4.0', integrity: 'sha512-new', optionalPeer: true, ...options });
-  const refusal = (from, to, withPins = pins) => pnpmLockRefusal('pnpm-lock.yaml', from, to, withPins, registry);
   // The failing pin: the SDK moves; core, pinned at the version it already has, gains its optional peer, its snapshot
   // moves that peer to optionalDependencies, and drizzle-orm, now reached only through it, becomes optional.
-  assert.equal(refusal(before, after()), null);
-  // The other direction (the registry's form again), and the same when the package is not one of the pins.
-  assert.equal(refusal(after({ sdk: '1.3.0', integrity: 'sha512-old' }), peerLock({ sdk: '1.4.0', integrity: 'sha512-new' })), null);
-  assert.equal(refusal(before, after(), [pins[1]]), null);
+  assert.equal(peerRefusal(peerBefore, peerAfter()), null);
+  // The other direction (the registry's form again, which needs no tarball), and the same when the package is not one of the pins.
+  assert.equal(peerRefusal(peerAfter({ sdk: '1.3.0', integrity: 'sha512-old' }), peerLock({ sdk: '1.4.0', integrity: 'sha512-new' }), { manifests: new Map() }), null);
+  assert.equal(peerRefusal(peerBefore, peerAfter(), { pins: [peerPins[1]] }), null);
   // Still refused: the entry's resolution or peers changing with it.
-  assert.match(refusal(before, after({ coreIntegrity: 'sha512-forged' })), /packages @revt-eng\/core@1\.0\.0-rl\.7\.2 changes more than which of its peers are optional/);
-  assert.match(refusal(before, after().replace("      drizzle-orm: '>=0.30.0'\n    peerDependenciesMeta", "      drizzle-orm: '*'\n    peerDependenciesMeta")), /changes more than which of its peers are optional/);
-  assert.match(refusal(before, after().replace('        optional: true\n', '        optional: true\n    hasBin: true\n')), /changes more than which of its peers are optional/);
-  assert.match(refusal(before, after().replace('      drizzle-orm:\n        optional: true', '      evil:\n        optional: true')), /marks evil optional, which is not one of its peers/);
-  assert.match(refusal(before, after().replace('      drizzle-orm:\n        optional: true', '      drizzle-orm:\n        optional: true\n        evil: true')), /more than optional flags/);
+  assert.match(peerRefusal(peerBefore, peerAfter({ coreIntegrity: 'sha512-forged' })), /packages @revt-eng\/core@1\.0\.0-rl\.7\.2 changes more than which of its peers are optional/);
+  assert.match(peerRefusal(peerBefore, peerAfter().replace("      drizzle-orm: '>=0.30.0'\n    peerDependenciesMeta", "      drizzle-orm: '*'\n    peerDependenciesMeta")), /changes more than which of its peers are optional/);
+  assert.match(peerRefusal(peerBefore, peerAfter().replace('        optional: true\n', '        optional: true\n    hasBin: true\n')), /changes more than which of its peers are optional/);
+  assert.match(peerRefusal(peerBefore, peerAfter().replace('      drizzle-orm:\n        optional: true', '      evil:\n        optional: true')), /marks evil optional, which is not one of its peers/);
+  assert.match(peerRefusal(peerBefore, peerAfter().replace('      drizzle-orm:\n        optional: true', '      drizzle-orm:\n        optional: true\n        evil: true')), /more than optional flags/);
   // Still refused: the same change on a package from another registry.
-  assert.match(refusal(before, after().replace('    resolution: {integrity: sha512-react}', '    resolution: {integrity: sha512-react}\n    peerDependenciesMeta:\n      x:\n        optional: true')), /packages react@19\.2\.7 changes/);
+  assert.match(peerRefusal(peerBefore, peerAfter().replace('    resolution: {integrity: sha512-react}', '    resolution: {integrity: sha512-react}\n    peerDependenciesMeta:\n      x:\n        optional: true')), /packages react@19\.2\.7 changes/);
   // Still refused: a snapshot whose edges change, or move without the peer's flag changing.
-  assert.match(refusal(before, after().replace('    optionalDependencies:\n      drizzle-orm: 0.45.2', '    optionalDependencies:\n      drizzle-orm: 0.45.3')), /snapshots @revt-eng\/core@1\.0\.0-rl\.7\.2\(drizzle-orm@0\.45\.2\) changes/);
-  assert.match(refusal(before, after().replace('      zod: 4.0.0\n    optionalDependencies:\n      drizzle-orm: 0.45.2', '    optionalDependencies:\n      drizzle-orm: 0.45.2\n      zod: 4.0.0')), /moves zod between dependencies and optionalDependencies/);
-  assert.match(refusal(before, after().replace('      zod: 4.0.0\n    optionalDependencies:', '      zod: 4.0.0\n      evil: 1.0.0\n    optionalDependencies:')), /snapshots @revt-eng\/core@1\.0\.0-rl\.7\.2\(drizzle-orm@0\.45\.2\) changes/);
-  assert.match(refusal(before, peerLock({ sdk: '1.4.0', integrity: 'sha512-new' }).replace('      drizzle-orm: 0.45.2\n      zod: 4.0.0', '      zod: 4.0.0\n    optionalDependencies:\n      drizzle-orm: 0.45.2')), /moves drizzle-orm between dependencies and optionalDependencies/);
+  assert.match(peerRefusal(peerBefore, peerAfter().replace('    optionalDependencies:\n      drizzle-orm: 0.45.2', '    optionalDependencies:\n      drizzle-orm: 0.45.3')), /snapshots @revt-eng\/core@1\.0\.0-rl\.7\.2\(drizzle-orm@0\.45\.2\) changes/);
+  assert.match(peerRefusal(peerBefore, peerAfter().replace('    dependencies:\n      zod: 4.0.0\n    optionalDependencies:\n      drizzle-orm: 0.45.2', '    optionalDependencies:\n      drizzle-orm: 0.45.2\n      zod: 4.0.0')), /moves zod between dependencies and optionalDependencies/);
+  assert.match(peerRefusal(peerBefore, peerAfter().replace('      zod: 4.0.0\n    optionalDependencies:', '      zod: 4.0.0\n      evil: 1.0.0\n    optionalDependencies:')), /snapshots @revt-eng\/core@1\.0\.0-rl\.7\.2\(drizzle-orm@0\.45\.2\) changes/);
+  assert.match(peerRefusal(peerBefore, peerLock({ sdk: '1.4.0', integrity: 'sha512-new' }).replace('      drizzle-orm: 0.45.2\n      zod: 4.0.0', '      zod: 4.0.0\n    optionalDependencies:\n      drizzle-orm: 0.45.2')), /moves drizzle-orm between dependencies and optionalDependencies/);
   // Still refused: `optional: true` where the lockfile's own graph does not put it, and any other change to a snapshot.
-  assert.match(refusal(before, after().replace('  react@19.2.7: {}', '  react@19.2.7:\n    optional: true')), /snapshots react@19\.2\.7 changes whether it is optional/);
-  assert.match(refusal(before, peerLock({ sdk: '1.4.0', integrity: 'sha512-new', drizzleOptional: true })), /snapshots drizzle-orm@0\.45\.2 changes whether it is optional/);
-  assert.match(refusal(before, after().replace('  zod@4.0.0: {}', '  zod@4.0.0:\n    dependencies:\n      react: 19.2.7')), /snapshots zod@4\.0\.0 changes/);
-  assert.match(refusal(before, after().replace('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2:\n    optional: true\n    hasBin: true')), /snapshots drizzle-orm@0\.45\.2 changes/);
+  assert.match(peerRefusal(peerBefore, peerAfter().replace('  react@19.2.7: {}', '  react@19.2.7:\n    optional: true')), /snapshots react@19\.2\.7 changes whether it is optional/);
+  assert.match(peerRefusal(peerBefore, peerLock({ sdk: '1.4.0', integrity: 'sha512-new', drizzleOptional: true })), /snapshots drizzle-orm@0\.45\.2 changes whether it is optional/);
+  assert.match(peerRefusal(peerBefore, peerAfter().replace('  zod@4.0.0: {}', '  zod@4.0.0:\n    dependencies:\n      react: 19.2.7')), /snapshots zod@4\.0\.0 changes/);
+  assert.match(peerRefusal(peerBefore, peerAfter().replace('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2:\n    optional: true\n    transitivePeerDependencies:\n      - evil')), /snapshots drizzle-orm@0\.45\.2 changes/);
+});
+
+test('optional peers are what the package itself says, read from its tarball, or none', () => {
+  // No package.json read for the entry, one read from a tarball with another hash, or one that says something else: refused.
+  assert.match(peerRefusal(peerBefore, peerAfter(), { manifests: new Map() }), /packages @revt-eng\/core@1\.0\.0-rl\.7\.2 marks peers optional, which could not be checked/);
+  assert.match(peerRefusal(peerBefore, peerAfter(), { manifests: coreManifest(undefined, 'sha512-other') }), /could not be checked/);
+  assert.match(peerRefusal(peerBefore, peerAfter(), { manifests: coreManifest({}) }), /marks other peers optional than the package's own package\.json does/);
+  assert.match(peerRefusal(peerBefore, peerAfter(), { manifests: coreManifest(null) }), /marks other peers optional/);
+  assert.match(peerRefusal(peerBefore, peerAfter(), { manifests: coreManifest({ 'drizzle-orm': { optional: false } }) }), /marks other peers optional/);
+  assert.match(peerRefusal(peerBefore, peerAfter(), { manifests: coreManifest({ 'drizzle-orm': { optional: true }, react: { optional: true } }) }), /marks other peers optional/);
+  // The flags a pin's new entry carries are checked the same way.
+  const flagged = peerAfter().replace("    peerDependencies:\n      react: '>=19'", "    peerDependencies:\n      react: '>=19'\n    peerDependenciesMeta:\n      react:\n        optional: true");
+  assert.match(peerRefusal(peerBefore, flagged), /packages @revt-eng\/sdk@1\.4\.0 marks peers optional, which could not be checked/);
+
+  // Which entries the push job downloads: the ones whose flags are new, from GitHub Packages only, by sha512.
+  const real = (text) => text.replaceAll('sha512-core', 'sha512-Y29yZQ==');
+  assert.deepEqual(peerMetaToVerify(real(peerBefore), real(peerAfter())), [{ key: '@revt-eng/core@1.0.0-rl.7.2', integrity: 'sha512-Y29yZQ==', tarball: ghTarball('@revt-eng/core', '1.0.0-rl.7.2') }]);
+  assert.deepEqual(peerMetaToVerify(real(peerAfter()), real(peerAfter())), [], 'unchanged flags are the branch head\'s');
+  assert.deepEqual(peerMetaToVerify(real(peerBefore), real(peerAfter()).replace('https://npm.pkg.github.com/download/@revt-eng/core/', 'https://evil.example/download/@revt-eng/core/')), [], 'never another host');
+  assert.deepEqual(peerMetaToVerify(real(peerBefore), real(peerAfter()).replace('download/@revt-eng/core/1.0.0-rl.7.2/', 'download/@revt-eng/sdk/1.0.0-rl.7.2/')), [], 'never another package');
+  assert.deepEqual(peerMetaToVerify(peerBefore.replaceAll('sha512-core', 'sha1-Y29yZQ=='), peerAfter().replaceAll('sha512-core', 'sha1-Y29yZQ==')), [], 'only a sha512 integrity');
+  assert.deepEqual(peerMetaToVerify(real(peerBefore), real(peerAfter()).replace('  react@19.2.7: {}', '  react@19.2.7: {optional: true}')), [], 'nothing is read from a lockfile that is not in pnpm\'s form');
+});
+
+/** A gzipped tar with these files, as npm packs one. */
+function tarball(files) {
+  const blocks = [];
+  for (const [name, content] of files) {
+    const header = Buffer.alloc(512), body = Buffer.from(content);
+    header.write(name, 0);
+    header.write('0000644\0', 100); header.write('0000000\0', 108); header.write('0000000\0', 116);
+    header.write(`${body.length.toString(8).padStart(11, '0')}\0`, 124);
+    header.write('00000000000\0', 136); header.write('        ', 148); header.write('0', 156); header.write('ustar\0' + '00', 257);
+    header.write(`${[...header].reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, '0')}\0 `, 148);
+    blocks.push(header, body, Buffer.alloc((512 - (body.length % 512)) % 512));
+  }
+  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
+}
+
+test('the package.json of a tarball is read only from the tarball the lockfile names, with its hash', async () => {
+  const manifest = { name: '@revt-eng/core', version: '1.0.0-rl.7.2', peerDependenciesMeta: { 'drizzle-orm': { optional: true } } };
+  const tgz = tarball([['package/README.md', 'x'.repeat(700)], ['package/package.json', JSON.stringify(manifest)], ['package/nested/package.json', '{"name":"other"}']]);
+  assert.deepEqual(tarballManifest(tgz), manifest);
+  assert.throws(() => tarballManifest(tarball([['package/index.js', '']])), /no package\/package\.json/);
+  const integrity = `sha512-${createHash('sha512').update(tgz).digest('base64')}`;
+  const entry = { key: '@revt-eng/core@1.0.0-rl.7.2', integrity, tarball: ghTarball('@revt-eng/core', '1.0.0-rl.7.2') };
+  const calls = [];
+  /** A stand-in for fetch. */
+  const fetching = (impl) => impl;
+  const fetchImpl = fetching(async (url, init) => { calls.push([url, init.headers.Authorization]); return { ok: true, arrayBuffer: async () => tgz.buffer.slice(tgz.byteOffset, tgz.byteOffset + tgz.length) }; });
+  const manifests = await readManifests([entry], { token: 'tok', fetchImpl });
+  assert.deepEqual(manifests.get(entry.key), { integrity, manifest });
+  assert.deepEqual(calls, [[entry.tarball, 'Bearer tok']]);
+  // End to end: the lockfile check takes exactly that.
+  const real = (text) => text.replaceAll('sha512-core', integrity);
+  const registry = new Map([...peerRegistry, ['@revt-eng/core', { '1.0.0-rl.7.2': { ...peerRegistry.get('@revt-eng/core')?.['1.0.0-rl.7.2'], integrity } }]]);
+  assert.equal(pnpmLockRefusal('pnpm-lock.yaml', real(peerBefore), real(peerAfter()), peerPins, registry, manifests), null);
+  // Another hash is an error; a tarball that cannot be downloaded stops the attempt (exit 75), as an unreadable registry entry does.
+  await assert.rejects(readManifests([{ ...entry, integrity: 'sha512-other' }], { fetchImpl }), /does not have the integrity the lockfile records/);
+  await assert.rejects(readManifests([entry], { fetchImpl: fetching(async () => ({ ok: false, status: 503 })) }), (error) => error instanceof RegistryUnavailable && /could not read the tarball of @revt-eng\/core@1\.0\.0-rl\.7\.2/.test(error.message));
+  await assert.rejects(readManifests([entry], { fetchImpl: fetching(async () => { throw new Error('socket'); }) }), (error) => error instanceof RegistryUnavailable);
+});
+
+test('a snapshot or package a pin adds is that version as the registry publishes it', () => {
+  const sdkSnapshot = "  '@revt-eng/sdk@1.4.0(react@19.2.7)':\n    dependencies:\n      react: 19.2.7";
+  const withSnapshot = (body) => peerAfter().replace(sdkSnapshot, body);
+  // Accepted: the registry's dependency, at a snapshot the lockfile has.
+  assert.equal(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n      zod: 4.0.0`)), null);
+  // A dependency the registry does not list for the version, under either heading.
+  assert.match(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n      drizzle-orm: 0.45.2`)), /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\) depends on drizzle-orm, which the registry does not list/);
+  assert.match(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n    optionalDependencies:\n      zod: 4.0.0`)), /optionally depends on zod, which the registry does not list as an optional dependency or optional peer/);
+  assert.match(peerRefusal(peerBefore, withSnapshot("  '@revt-eng/sdk@1.4.0(react@19.2.7)':\n    optionalDependencies:\n      react: 19.2.7")), /optionally depends on react/);
+  assert.match(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n    optionalDependencies:\n      react: 19.2.7`)), /lists react under dependencies and optionalDependencies/);
+  // An edge to a snapshot the lockfile does not have, a field pnpm does not write, an `optional: true` the graph does not give.
+  assert.match(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n      zod: 4.0.1`)), /zod@4\.0\.1 is depended on, and the lockfile has no snapshot of it/);
+  assert.match(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n    patched: true`)), /has patched, which pnpm does not write on a snapshot/);
+  assert.match(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n    optional: true`)), /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\) is optional, which the lockfile's dependencies do not explain/);
+  // The reviewer's probes: a second snapshot of the pinned package that nothing depends on, with or without new edges.
+  assert.match(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n      drizzle-orm: 0.45.2\n\n  '@revt-eng/sdk@1.4.0(evil)':\n    dependencies:\n      drizzle-orm: 0.45.2`)), /depends on drizzle-orm, which the registry does not list/);
+  assert.match(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n\n  '@revt-eng/sdk@1.4.0(react@18)':\n    dependencies:\n      react: 19.2.7\n      zod: 4.0.0`)), /snapshots adds @revt-eng\/sdk@1\.4\.0\(react@18\), which nothing depends on/);
+  // The importer must point at a snapshot too.
+  assert.match(peerRefusal(peerBefore, peerAfter().replace('version: 1.4.0(react@19.2.7)', 'version: 1.4.0(react@18.0.0)')), /@revt-eng\/sdk@1\.4\.0\(react@18\.0\.0\) is depended on, and the lockfile has no snapshot of it/);
+  // The new packages entry: the registry's peers, only fields pnpm writes.
+  assert.match(peerRefusal(peerBefore, peerAfter().replace("    peerDependencies:\n      react: '>=19'", "    peerDependencies:\n      react: '>=19'\n      evil: '*'")), /packages @revt-eng\/sdk@1\.4\.0 does not have the registry's peers \(evil\)/);
+  assert.match(peerRefusal(peerBefore, peerAfter().replace("\n    peerDependencies:\n      react: '>=19'", '')), /does not have the registry's peers \(react\)/);
+  assert.match(peerRefusal(peerBefore, peerAfter().replace("    peerDependencies:\n      react: '>=19'", "    peerDependencies:\n      react: '>=19'\n    requiresBuild: true")), /has requiresBuild, which pnpm does not write on a package/);
+  // A lockfile's graph, as lockGraph reads it.
+  assert.equal(pnpmFormRefusal('pnpm-lock.yaml', peerAfter()), null);
+  assert.equal(typeof lockGraph, 'function');
+});
+
+test('a pnpm-lock.yaml is read only in the form pnpm writes', () => {
+  const refusedForm = (text, message) => {
+    assert.match(String(pnpmFormRefusal('pnpm-lock.yaml', text)), /is not in the form pnpm writes/, message);
+    // In the bundle and on the branch alike, before anything else is looked at.
+    assert.match(String(peerRefusal(peerBefore, text)), /^pnpm-lock\.yaml line \d+ is not in the form pnpm writes|^pnpm-lock\.yaml is not in the form/, message);
+    assert.match(String(peerRefusal(text, peerAfter())), /^pnpm-lock\.yaml on the branch (line \d+ )?is not in the form pnpm writes/, message);
+  };
+  const after = peerAfter();
+  const swap = (from, to, text = after) => { assert.ok(text.includes(from), from); return text.replace(from, to); };
+  // Every form pnpm writes, including the inline ones.
+  assert.equal(pnpmFormRefusal('pnpm-lock.yaml', after), null);
+  assert.equal(pnpmFormRefusal('pnpm-lock.yaml', swap('  zod@4.0.0:\n    resolution: {integrity: sha512-zod}', [
+    '  zod@4.0.0:', '    resolution: {integrity: sha512-zod}', "    engines: {node: ^18.0.0 || >=20.0.0, npm: '>=9'}", '    cpu: [x64, arm64]', '    os: [darwin]', '    libc: [glibc]', '    hasBin: true',
+    "    deprecated: 'Renamed: use zod-next'", '    bundledDependencies:', '      - tslib', "      - '@scope/dep'", '',
+    '  ansi@0.0.8:', "    resolution: {integrity: sha512-ansi}", "    engines: {'0': node >= 0.8.0}", '    deprecated: "a\\tb"'].join('\n'))), null);
+
+  // The reviewer's probes: a flow mapping pnpm's parser reads in full and a line reader would read as empty.
+  refusedForm(swap('  react@19.2.7: {}', '  react@19.2.7: {optional: true}'), 'p4/p6: a required dependency marked optional in flow form');
+  refusedForm(swap('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2: {optional: true, dependencies: {evil-pkg: 9.9.9}}'), 'p3: optional and a dependency injected in flow form');
+  refusedForm(swap("  '@revt-eng/core@1.0.0-rl.7.2':\n    resolution: {integrity: sha512-core, tarball: https://npm.pkg.github.com/download/@revt-eng/core/1.0.0-rl.7.2/abc123}\n    peerDependencies:\n      drizzle-orm: '>=0.30.0'",
+    "  '@revt-eng/core@1.0.0-rl.7.2': {resolution: {integrity: sha512-FORGED}, peerDependencies: {evil: '*'}}"), 'p3: a packages entry in flow form');
+  refusedForm(swap('    optionalDependencies:\n      drizzle-orm: 0.45.2', '    optionalDependencies: {drizzle-orm: 0.45.2}'), 'p4: optionalDependencies in flow form');
+  refusedForm(swap('    peerDependenciesMeta:\n      drizzle-orm:\n        optional: true', '    peerDependenciesMeta: {evil: {optional: true}}'), 'p5: peerDependenciesMeta in flow form');
+  refusedForm(swap('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2:\n\toptional: true'), 'p4: a tab');
+  refusedForm(swap('  react@19.2.7:\n    resolution: {integrity: sha512-react}', '  react@19.2.7:\n    resolution: {integrity: sha512-react}\n\n  react@19.2.7:\n    resolution: {integrity: sha512-FORGED}'), 'p1: an entry twice');
+  refusedForm(swap("  '@revt-eng/core@1.0.0-rl.7.2':", '  "@revt-eng/core@1.0.0-rl.7.2":'), 'p2: a double-quoted key');
+
+  // A `{}` entry given a body on the next line, which a diff of entries would not see.
+  refusedForm(swap('  zod@4.0.0: {}', '  zod@4.0.0: {}\n    optional: true'), 'a body under {}');
+  refusedForm(swap('  zod@4.0.0: {}', '  zod@4.0.0: {}\n      dependencies: {evil: 1.0.0}'), 'a flow body under {}');
+  refusedForm(swap('  zod@4.0.0: {}', '  zod@4.0.0: {dependencies: {evil: 1.0.0}}'), 'a flow body in place of {}');
+  refusedForm(swap('    dependencies:\n      react: 19.2.7\n\n  drizzle', '    dependencies: {react: 19.2.7, evil: 1.0.0}\n\n  drizzle'), 'flow dependencies');
+  refusedForm(swap('    resolution: {integrity: sha512-new, tarball', "    resolution: {x: 'integrity: sha512-new', integrity: sha512-evil, tarball"), 'a quoted value in a resolution');
+  refusedForm(swap('    resolution: {integrity: sha512-zod}', '    resolution: {integrity: sha512-zod, integrity: sha512-evil}'), 'a key twice in a resolution');
+  refusedForm(swap('    resolution: {integrity: sha512-zod}', '    resolution: {integrity: sha512-zod}\n    cpu: {x64: true}'), 'a mapping where pnpm writes a list');
+  refusedForm(swap('  autoInstallPeers: true', '  autoInstallPeers: true\n  list: [a, b]'), 'a one-line list anywhere else');
+  refusedForm(swap('  autoInstallPeers: true', '  autoInstallPeers: {}'), 'an empty mapping anywhere else');
+  // Duplicate keys at every level, and quoting that would make two spellings of one key.
+  refusedForm(swap('    dependencies:\n      react: 19.2.7\n\n  drizzle', '    dependencies:\n      react: 19.2.7\n      react: 19.2.8\n\n  drizzle'), 'a dependency twice');
+  refusedForm(swap('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2:\n    optional: true\n    optional: true'), 'a field twice');
+  refusedForm(swap('snapshots:', 'snapshots:\n\n  zod@9.9.9: {}\n\nsnapshots:'), 'a section twice');
+  refusedForm(swap('  react@19.2.7: {}', "  'react@19.2.7': {}"), 'a quoted key pnpm writes plain');
+  refusedForm(swap("  '@revt-eng/sdk@1.4.0':", '  @revt-eng/sdk@1.4.0:'), 'a plain key pnpm writes quoted');
+  refusedForm(swap('  react@19.2.7: {}', '  "react@19.2.7": {}'), 'a double-quoted key');
+  refusedForm(swap('  react@19.2.7: {}', '  ? react@19.2.7\n  : {}'), 'a complex key');
+  refusedForm(swap('  react@19.2.7: {}', '  react@19.2.7 : {}'), 'a space before the colon');
+  refusedForm(swap('  react@19.2.7: {}', '  react@19.2.7:{}'), 'no space after the colon');
+  // Anchors, aliases, tags, merge keys, comments, block scalars, directives, documents.
+  refusedForm(swap('      react: 19.2.7\n\n  drizzle', '      react: &a 19.2.7\n\n  drizzle'), 'an anchor');
+  refusedForm(swap('      react: 19.2.7\n\n  drizzle', '      react: *a\n\n  drizzle'), 'an alias');
+  refusedForm(swap('      react: 19.2.7\n\n  drizzle', '      react: !!str 19.2.7\n\n  drizzle'), 'a tag');
+  refusedForm(swap('      react: 19.2.7\n\n  drizzle', '      <<: *a\n\n  drizzle'), 'a merge key');
+  refusedForm(swap('  autoInstallPeers: true', '  autoInstallPeers: true # yes'), 'a trailing comment');
+  refusedForm(swap('settings:', '# a comment\nsettings:'), 'a comment line');
+  refusedForm(swap('    resolution: {integrity: sha512-zod}', '    resolution: {integrity: sha512-zod}\n    deprecated: |\n      gone'), 'a block scalar');
+  refusedForm(swap('    resolution: {integrity: sha512-zod}', '    resolution: {integrity: sha512-zod}\n    deprecated: gone\n      and more'), 'a value continued on the next line');
+  refusedForm(swap('    resolution: {integrity: sha512-zod}', "    resolution: {integrity: sha512-zod}\n    deprecated: 'gone\n      and more'"), 'a quoted value continued on the next line');
+  refusedForm(swap('    resolution: {integrity: sha512-zod}', '    resolution: {integrity: sha512-zod}\n    hasBin: "true"'), 'a double-quoted value where pnpm writes none');
+  refusedForm(`%YAML 1.2\n---\n${after}`, 'a directive');
+  refusedForm(`---\n${after}`, 'a document start');
+  refusedForm(`${after}---\nsnapshots: {}\n`, 'a second document');
+  refusedForm(`${after}...\n`, 'a document end');
+  // Whitespace, line ends and indentation.
+  refusedForm(after.replaceAll('\n', '\r\n'), 'CRLF');
+  refusedForm(after.slice(0, -1), 'no final newline');
+  refusedForm(`${after}\n`, 'two final newlines');
+  refusedForm(swap('settings:', '\nsettings:'), 'two blank lines');
+  refusedForm(swap('    dependencies:\n      react: 19.2.7\n\n  drizzle', '    dependencies:\n\n      react: 19.2.7\n\n  drizzle'), 'a blank line inside an entry');
+  refusedForm(swap('  autoInstallPeers: true', '  autoInstallPeers: true '), 'a trailing space');
+  refusedForm(swap('  autoInstallPeers: true', '   autoInstallPeers: true'), 'odd indentation');
+  refusedForm(swap('  autoInstallPeers: true', '    autoInstallPeers: true'), 'indentation that opens no block');
+  refusedForm(swap('  autoInstallPeers: true', '  autoInstallPeers: true\u2028'), 'a Unicode line separator');
+  refusedForm(swap('  autoInstallPeers: true', '\u00a0 autoInstallPeers: true'), 'a no-break space as indentation');
+  refusedForm(`\ufeff${after}`, 'a byte order mark');
+  // Values that are not what pnpm writes there.
+  refusedForm(swap('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2:\n    optional: True'), 'optional: True');
+  refusedForm(swap('  drizzle-orm@0.45.2:\n    optional: true', "  drizzle-orm@0.45.2:\n    optional: 'true'"), "optional: 'true'");
+  refusedForm(swap('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2:\n    optional: false'), 'optional: false');
+  refusedForm(swap('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2:'), 'a key with no value');
+  refusedForm(swap('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2:\n    optional: true\n    dependencies:'), 'a block with nothing in it');
+  refusedForm(swap('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2:\n    optional: true\n    - x'), 'a list item among keys');
+  refusedForm(swap('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2: ~'), 'a null');
+  refusedForm(swap("lockfileVersion: '9.0'", "lockfileVersion: '6.0'"), 'another lockfile version');
+  // What the check reads has the one shape pnpm gives it: pnpm would read a list or a scalar there differently.
+  refusedForm(swap('    dependencies:\n      react: 19.2.7\n\n  drizzle', '    dependencies:\n      - zod@4.0.0\n\n  drizzle'), 'dependencies as a list');
+  refusedForm(swap('    dependencies:\n      react: 19.2.7\n\n  drizzle', '    dependencies: zod@4.0.0\n\n  drizzle'), 'dependencies as a scalar');
+  refusedForm(swap('    dependencies:\n      react: 19.2.7\n\n  drizzle', '    dependencies:\n      react:\n        version: 19.2.7\n\n  drizzle'), 'a dependency as a block');
+  refusedForm(swap('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2:\n    optional:\n      yes: true'), 'optional as a block');
+  refusedForm(swap('  drizzle-orm@0.45.2:\n    optional: true', '  drizzle-orm@0.45.2:\n    optional: true\n    transitivePeerDependencies:\n      react: 19.2.7'), 'transitivePeerDependencies as keys');
+  refusedForm(swap('      react:\n        specifier: 19.2.7\n        version: 19.2.7', '      react: 19.2.7'), 'an importer dependency as a scalar');
+  refusedForm(swap('        specifier: 19.2.7\n        version: 19.2.7', '        specifier: 19.2.7\n        version:\n          - 19.2.7'), 'an importer version as a list');
+  refusedForm(swap('    peerDependenciesMeta:\n      drizzle-orm:\n        optional: true', '    peerDependenciesMeta:\n      drizzle-orm: true'), 'a peer flag as a scalar');
+  refusedForm(swap("    peerDependencies:\n      drizzle-orm: '>=0.30.0'", '    peerDependencies:\n      - drizzle-orm'), 'peerDependencies as a list');
+  refusedForm(swap('    resolution: {integrity: sha512-zod}', '    resolution:\n      integrity: sha512-zod'), 'a resolution on the lines below');
+  refusedForm(swap('  react@19.2.7:\n    resolution: {integrity: sha512-react}', '  react@19.2.7: {}'), 'an empty packages entry');
 });

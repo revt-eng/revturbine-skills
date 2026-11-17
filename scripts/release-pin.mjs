@@ -51,7 +51,12 @@
 //          committer come from GIT_AUTHOR_* / GIT_COMMITTER_*. Lockfile entries are
 //          checked against the registry; if a pinned package's registry entry
 //          cannot be read it commits nothing and exits 75, so the workflow
-//          tries again on its next attempt.
+//          tries again on its next attempt. A pnpm-lock.yaml is read only in
+//          the exact form pnpm writes (pnpmFormRefusal), on the branch and in
+//          the bundle. Which peers of a @revt-eng package it marks optional is
+//          checked against the package's own package.json, from the tarball
+//          the lockfile names, downloaded and hashed here (exit 75 as well
+//          when that cannot be read).
 //
 // Identical copies live in every repository with release-pin.yml; change them
 // together.
@@ -63,10 +68,12 @@
 //   node scripts/release-pin.mjs commit --branch release/RL-<n> --packages "<name>@<version> ..." --git-dir <bare> --tip <sha> --bundle <dir>
 
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 
 export const RELEASE_BRANCH = /^release\/RL-([1-9][0-9]*)$/;
 const SCOPED = /^@revt-eng\/[a-z0-9][a-z0-9._-]*$/;
@@ -631,43 +638,220 @@ function packageKey(key) {
   return { name: key.slice(0, at), version: paren < 0 ? rest : rest.slice(0, paren) };
 }
 
+/**
+ * Whether js-yaml, which pnpm writes its lockfile with, writes a string plain (no quotes): not empty, not starting
+ * with a YAML indicator, without ": " or " #", and not something YAML reads as a null, boolean, number or date.
+ */
+function plainScalar(text) {
+  if (text === '' || /^[\s\-?:,[\]{}#&*!|=>'"%@`]|\s$|:$| #|: /.test(text)) return false;
+  if (/^(?:~|null|Null|NULL|true|True|TRUE|false|False|FALSE|<<)$/.test(text)) return false;
+  if (/^[-+]?(?:0b[01_]+|0o?[0-7_]+|0x[0-9a-fA-F_]+|[0-9][0-9_]*(?:\.[0-9_]*)?(?:[eE][-+]?[0-9]+)?|\.[0-9_]+(?:[eE][-+]?[0-9]+)?|\.(?:inf|Inf|INF))$|^\.(?:nan|NaN|NAN)$/.test(text)) return false;
+  return !/^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt\s].*)?$/.test(text);
+}
+
+/** What a key of a pnpm-lock.yaml is made of: package names, versions, ranges, peer suffixes and importer paths. */
+const LOCK_KEY = /^[A-Za-z0-9@._][A-Za-z0-9@/._()+^~<>=*|-]*$/;
+/** A plain value inside the one-line `{...}` of resolution and engines: no quotes, commas, brackets or comments. */
+const FLOW_PLAIN = String.raw`[^\s,[\]{}#&*!|=>'"%@\`?:-](?:[^\s,[\]{}#:'"]|:(?=[^\s,}])| (?=[^\s,}#:]))*`;
+const FLOW_PAIR = new RegExp(String.raw`([A-Za-z][A-Za-z0-9]*|'[0-9]+'): ('(?:[^']|'')*'|${FLOW_PLAIN})(, |\}$)`, 'y');
+const FLOW_LIST = /^\[(?:[A-Za-z0-9_.-]+|'[!A-Za-z0-9_.-]+')(?:, (?:[A-Za-z0-9_.-]+|'[!A-Za-z0-9_.-]+'))*\]$/;
+
+/** Why a one-line `{key: value, ...}` is not one pnpm writes (unique keys; plain values only when `plainOnly`), or null. */
+function flowMapRefusal(value, plainOnly) {
+  const seen = new Set();
+  let at = 1;
+  if (value[0] !== '{') return 'not a one-line mapping';
+  while (at < value.length) {
+    FLOW_PAIR.lastIndex = at;
+    const pair = FLOW_PAIR.exec(value);
+    if (!pair) return 'not a one-line mapping pnpm writes';
+    if (seen.has(pair[1])) return `the key ${pair[1]} twice`;
+    if (plainOnly && (pair[1].startsWith("'") || pair[2].startsWith("'"))) return 'a quoted key or value in a resolution';
+    seen.add(pair[1]);
+    at = FLOW_PAIR.lastIndex;
+  }
+  return null;
+}
+
+const DEP_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'];
+const PACKAGE_SHAPES = new Map([['resolution', 'map'], ['engines', 'map'], ['cpu', 'list'], ['os', 'list'], ['libc', 'list'], ['peerDependencies', 'block'],
+  ['peerDependenciesMeta', 'block'], ['hasBin', 'scalar'], ['deprecated', 'scalar'], ['bundledDependencies', 'items']]);
+const SNAPSHOT_SHAPES = new Map([['dependencies', 'block'], ['optionalDependencies', 'block'], ['transitivePeerDependencies', 'items'], ['optional', 'scalar']]);
+/**
+ * The one shape pnpm gives a key the check reads, by where it is (`parents`: the keys it is under, from the section
+ * down): 'block' (keys on the lines below), 'items' (a list on the lines below), 'scalar', 'map' ({...}), 'list'
+ * ([...]) or 'entry' (a block, or `{}`); undefined where the check reads nothing.
+ */
+function lockShape(parents, key) {
+  const [section, , field] = parents, depth = parents.length;
+  if (depth === 1) return section === 'packages' ? 'block' : section === 'importers' || section === 'snapshots' ? 'entry' : undefined;
+  if (section === 'importers') {
+    if (depth === 2) return DEP_FIELDS.includes(key) ? 'block' : undefined;
+    return DEP_FIELDS.includes(field) ? (depth === 3 ? 'block' : 'scalar') : undefined;
+  }
+  if (section === 'packages') {
+    if (depth === 2) return PACKAGE_SHAPES.get(key);
+    if (field === 'peerDependencies') return 'scalar';
+    return field === 'peerDependenciesMeta' ? (depth === 3 ? 'block' : 'scalar') : undefined;
+  }
+  if (section === 'snapshots') {
+    if (depth === 2) return SNAPSHOT_SHAPES.get(key);
+    return field === 'dependencies' || field === 'optionalDependencies' ? 'scalar' : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Refusal unless a pnpm-lock.yaml is in the exact form pnpm writes, so that this file's line reader and pnpm's YAML
+ * parser cannot read it differently; null when it is. Everything YAML offers beyond this is refused, not parsed:
+ *   - LF only, no tab or control character, one final newline, no trailing space; the first line is
+ *     `lockfileVersion: '9.0'`; a blank line only before a line indented 0 or 2, never two together;
+ *   - every other line is `<key>:` (opening a block, whose first line is indented exactly two more), `<key>: <value>`
+ *     or `- <value>`; indentation is in steps of two and a line dedents only to an open block; a block is either all
+ *     keys or all list items; a key that opens a block has one (no empty values); no key twice in a block;
+ *   - a key is plain or single-quoted, quoted exactly when js-yaml would quote it (in practice: it starts with `@`),
+ *     and made of package-name, version, range and path characters only (no colon, space, `#` or quote);
+ *   - a value is one plain or single-quoted scalar on its line (plain: no ": ", no " #", no leading indicator, so no
+ *     anchor, alias, tag, merge key, comment, block scalar, directive or document marker); `true`, `false` and
+ *     integers are the only plain values that are not strings;
+ *   - the inline forms, each only where pnpm writes it: `{}` as a whole snapshots or importers entry;
+ *     `resolution: {key: plain, ...}` and `engines: {key: plain-or-quoted, ...}` on a packages entry (an engines
+ *     key may be a quoted number: pnpm writes a package.json whose engines is a list as `{'0': ...}`);
+ *     `cpu:`, `os:`, `libc: [a, b]` on a packages entry; `deprecated: "..."` on a packages entry (one line);
+ *   - where the check reads a value, it has the one shape pnpm gives it (lockShape): an importer's dependencies are
+ *     blocks of `specifier` and `version` scalars; a snapshot's dependencies and optionalDependencies are blocks of
+ *     scalars and its transitivePeerDependencies a list; a package's peerDependencies is a block of scalars and its
+ *     peerDependenciesMeta a block of blocks of scalars; a list on the lines below a key is written only for
+ *     transitivePeerDependencies and bundledDependencies, and for keys the check does not read;
+ *   - `optional:` on a snapshots entry is `true`.
+ */
+export function pnpmFormRefusal(file, text) {
+  const refuse = (line, why) => `${file}${line ? ` line ${line}` : ''} is not in the form pnpm writes (${why}), so it cannot be checked`;
+  if (typeof text !== 'string' || !text.endsWith('\n') || text.endsWith('\n\n')) return refuse(0, 'it must end with one newline');
+  for (let at = 0, line = 1; at < text.length; at += 1) {
+    const code = text.charCodeAt(at);
+    if (code === 10) line += 1;
+    else if (code < 32 || (code >= 127 && code <= 159) || code === 0x2028 || code === 0x2029 || code === 0xfeff) return refuse(line, 'a tab, carriage return or control character');
+  }
+  const lines = text.slice(0, -1).split('\n');
+  if (lines[0] !== "lockfileVersion: '9.0'") return refuse(1, "the first line must be lockfileVersion: '9.0'");
+  /** The open blocks, outermost first: their indentation, whether they hold keys or list items, and the keys so far. */
+  const stack = [{ indent: 0, list: false, keys: new Set(), name: null }];
+  let opener = null, blank = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i], n = i + 1;
+    if (line === '') {
+      if (blank) return refuse(n, 'two blank lines');
+      blank = true;
+      continue;
+    }
+    const indent = /^ */.exec(line)[0].length, rest = line.slice(indent);
+    if (indent % 2 || line.endsWith(' ')) return refuse(n, 'odd indentation or a trailing space');
+    if (blank && indent > 2) return refuse(n, 'a blank line inside an entry');
+    blank = false;
+    const item = rest.startsWith('- ') ? rest.slice(2) : null;
+    if (opener) {
+      if (indent !== opener.indent + 2) return refuse(n, `${opener.key} has no value`);
+      const shape = item !== null ? 'items' : 'block';
+      if (opener.shape !== undefined && opener.shape !== shape && !(opener.shape === 'entry' && shape === 'block')) return refuse(n, `${opener.key} is not written as pnpm writes it there`);
+      stack.push({ indent, list: item !== null, keys: new Set(), name: opener.key });
+      opener = null;
+    } else {
+      while (stack.at(-1).indent > indent) stack.pop();
+      if (stack.at(-1).indent !== indent) return refuse(n, 'indentation that matches no open block');
+    }
+    const block = stack.at(-1);
+    if (block.list !== (item !== null)) return refuse(n, 'a list item and a key in one block');
+    const scalar = (value) => (value.startsWith("'") ? /^'(?:[^']|'')*'$/.test(value) : plainScalar(value) || /^(?:true|false|0|[1-9][0-9]*)$/.test(value));
+    if (item !== null) {
+      if (!scalar(item)) return refuse(n, 'a list item that is not one plain or single-quoted value');
+      continue;
+    }
+    const quoted = /^'((?:[^']|'')*)'(?::$|: (.+)$)/.exec(rest), plain = quoted ? null : /^([^\s:'"]+)(?::$|: (.+)$)/.exec(rest);
+    if (!quoted && !plain) return refuse(n, 'not a key and a value');
+    const key = quoted ? quoted[1].replace(/''/g, "'") : plain[1], value = (quoted ?? plain)[2];
+    if (!LOCK_KEY.test(key) || plainScalar(key) === Boolean(quoted) || (indent === 0 && !/^[A-Za-z][A-Za-z0-9]*$/.test(key))) return refuse(n, 'a key pnpm would not write that way');
+    if (block.keys.has(key)) return refuse(n, `the key ${key} twice`);
+    block.keys.add(key);
+    const parents = stack.slice(1).map((open) => open.name), shape = lockShape(parents, key);
+    const onPackage = parents.length === 2 && parents[0] === 'packages';
+    let why = null;
+    if (value === undefined) {
+      if (shape !== undefined && !['block', 'items', 'entry'].includes(shape)) why = `${key} is not written as pnpm writes it there`;
+      opener = { indent, key, shape };
+    } else if (value === '{}') why = shape === 'entry' ? null : 'an empty mapping where pnpm writes none';
+    else if (value.startsWith('{')) why = shape === 'map' ? flowMapRefusal(value, key === 'resolution') : 'a one-line mapping where pnpm writes none';
+    else if (value.startsWith('[')) why = shape === 'list' && FLOW_LIST.test(value) ? null : 'a one-line list where pnpm writes none';
+    else if (value.startsWith('"')) why = onPackage && key === 'deprecated' && /^"(?:[^"\\]|\\.)*"$/.test(value) ? null : 'a double-quoted value where pnpm writes none';
+    else if (!scalar(value)) why = 'a value that is not one plain or single-quoted scalar';
+    else if (shape !== undefined && shape !== 'scalar') why = `${key} is not written as pnpm writes it there`;
+    else if (parents.length === 2 && parents[0] === 'snapshots' && key === 'optional' && value !== 'true') why = 'optional is not true';
+    if (why) return refuse(n, why);
+  }
+  return opener ? refuse(lines.length, `${opener.key} has no value`) : null;
+}
+
 /** The `name: value` lines of a mapping block, one indentation in: name -> value, both unquoted. */
 function yamlPairs(block, indent) {
   const pairs = new Map();
-  const unquote = (value) => value.trim().replace(/^'(.*)'$|^"(.*)"$/, (all, single, double) => single ?? double);
+  const unquote = (value) => { const text = value.trim(); return /^'.*'$/.test(text) ? text.slice(1, -1).replace(/''/g, "'") : text; };
   for (const item of block ? yamlBlocks(block.lines.slice(1), indent) : []) {
-    if (item.key !== null) pairs.set(item.key, unquote(item.lines[0].replace(/^\s*(?:'(?:[^']|'')*'|"[^"]*"|[^:]*):/, '')));
+    if (item.key !== null) pairs.set(item.key, unquote(item.lines[0].replace(/^\s*(?:'(?:[^']|'')*'|[^:]*):/, '')));
   }
   return pairs;
 }
 /** The fields of a packages or snapshots entry (resolution, peerDependencies, dependencies, ...), by name. */
-const entryFields = (block) => byKey(yamlBlocks(block.lines.slice(1), 4));
+const entryFields = (block) => (/:\s*\{\}\s*$/.test(block.lines[0]) ? new Map() : byKey(yamlBlocks(block.lines.slice(1), 4)));
+/** The integrity and tarball of a packages entry's `resolution: {integrity: ..., tarball: ...}` line. */
+function entryResolution(block) {
+  const resolution = block.lines.map((line) => line.trim()).find((line) => line.startsWith('resolution: '));
+  return { integrity: /integrity: ([^,}\s]+)/.exec(resolution ?? '')?.[1], tarball: /tarball: ([^,}\s]+)/.exec(resolution ?? '')?.[1] };
+}
 
 /**
- * The peers a packages entry marks optional, as { names } or { refusal }: peerDependenciesMeta may hold nothing but
- * `optional: true|false` for peers the entry declares in peerDependencies.
+ * The peers a packages entry marks optional, as { flags } (peer -> true|false) or { refusal }: peerDependenciesMeta
+ * may hold nothing but `optional: true|false` for peers the entry declares in peerDependencies.
  */
 function optionalPeers(block) {
   const fields = entryFields(block);
   const declared = yamlPairs(fields.get('peerDependencies'), 6);
-  const names = new Set();
+  const flags = new Map();
   for (const meta of fields.has('peerDependenciesMeta') ? yamlBlocks(fields.get('peerDependenciesMeta').lines.slice(1), 6) : []) {
     const body = meta.lines.slice(1).map((line) => line.trim()).filter(Boolean);
     if (meta.key === null || !/:\s*$/.test(meta.lines[0]) || body.length !== 1 || !/^optional: (true|false)$/.test(body[0])) return { refusal: 'gives peerDependenciesMeta more than optional flags' };
     if (!declared.has(meta.key)) return { refusal: `marks ${meta.key} optional, which is not one of its peers` };
-    if (body[0] === 'optional: true') names.add(meta.key);
+    flags.set(meta.key, body[0] === 'optional: true');
   }
-  return { names };
+  return { flags };
+}
+/** The peers an entry marks `optional: true` (none when its flags are refused). */
+const optionalPeerNames = (block) => new Set([...(optionalPeers(block).flags ?? [])].filter(([, optional]) => optional).map(([name]) => name));
+
+/**
+ * Why a packages entry's peerDependenciesMeta is not one pnpm writes for this package, or null. pnpm writes two forms:
+ * none (the version was resolved from GitHub Packages' metadata, which omits the field) or exactly the
+ * peerDependenciesMeta of the package's own package.json (read from its tarball). `manifests` maps name@version to
+ * { integrity, manifest }: the package.json of the tarball with that sha512, which the push job downloaded and hashed
+ * itself (readManifests). An entry with flags and no such manifest is refused.
+ */
+function peerMetaRefusal(key, block, manifests) {
+  const peers = optionalPeers(block);
+  if (peers.refusal) return peers.refusal;
+  if (!entryFields(block).has('peerDependenciesMeta')) return null;
+  const verified = manifests?.get(key);
+  if (!verified || verified.integrity !== entryResolution(block).integrity) return "marks peers optional, which could not be checked against the package's own package.json";
+  const published = verified.manifest?.peerDependenciesMeta;
+  const written = Object.fromEntries([...peers.flags].map(([name, optional]) => [name, { optional }]));
+  if (!published || typeof published !== 'object' || canonical(written) !== canonical(published)) return "marks other peers optional than the package's own package.json does";
+  return null;
 }
 
 /**
  * Why a packages entry that keeps its key may not change from `a` to `b`, or null. Only a GitHub Packages package
- * (@revt-eng/*) may, and only in peerDependenciesMeta: that registry's metadata omits the field, so pnpm writes an
- * entry without it when it resolves the version from the registry and with it when it reads the manifest from the
- * tarball of an entry the lockfile already has. The key (name and version), the resolution (integrity and tarball),
- * the peers and every other field stay byte for byte.
+ * (@revt-eng/*) may, and only in peerDependenciesMeta, to one of the two forms pnpm writes (peerMetaRefusal). The key
+ * (name and version), the resolution (integrity and tarball), the peers and every other field stay byte for byte.
  */
-function packagesEntryRefusal(key, a, b) {
+function packagesEntryRefusal(key, a, b, manifests) {
   const parsed = packageKey(key);
   if (!parsed || !SCOPED.test(parsed.name) || a.lines[0].trimEnd() !== b.lines[0].trimEnd()) return 'changes';
   const fieldsA = entryFields(a), fieldsB = entryFields(b);
@@ -675,20 +859,68 @@ function packagesEntryRefusal(key, a, b) {
     if (field === 'peerDependenciesMeta') continue;
     if (!fieldsA.has(field) || !fieldsB.has(field) || blockText(fieldsA.get(field)) !== blockText(fieldsB.get(field))) return 'changes more than which of its peers are optional';
   }
-  return optionalPeers(b).refusal ?? null;
+  return peerMetaRefusal(key, b, manifests);
+}
+
+/** The fields pnpm writes on a packages entry and on a snapshots entry. */
+const PACKAGE_FIELDS = new Set(['resolution', 'engines', 'peerDependencies', 'peerDependenciesMeta', 'hasBin', 'deprecated', 'cpu', 'os', 'libc', 'bundledDependencies']);
+const SNAPSHOT_FIELDS = new Set(['dependencies', 'optionalDependencies', 'transitivePeerDependencies', 'optional']);
+const names = (record) => new Set(record && typeof record === 'object' ? Object.keys(record) : []);
+
+/**
+ * Why a packages entry a pin adds is not that version as its registry publishes it, or null: only fields pnpm writes;
+ * its peers are the registry's peerDependencies by name (plus a peer its verified package.json marks optional without
+ * declaring); its optional peers are one of the two forms pnpm writes (peerMetaRefusal).
+ */
+function newPackageRefusal(key, block, declared, manifests) {
+  const fields = entryFields(block);
+  const unknown = [...fields.keys()].find((field) => !PACKAGE_FIELDS.has(field));
+  if (unknown !== undefined) return `has ${unknown ?? 'a line'}, which pnpm does not write on a package`;
+  const refused = peerMetaRefusal(key, block, manifests);
+  if (refused) return refused;
+  const peers = names(declared?.peerDependencies), flagged = optionalPeers(block).flags;
+  const written = [...yamlPairs(fields.get('peerDependencies'), 6).keys()];
+  const stray = written.find((name) => !peers.has(name) && !flagged.has(name)) ?? [...peers].find((name) => !written.includes(name));
+  return stray === undefined ? null : `does not have the registry's peers (${stray})`;
 }
 
 /** A snapshots entry: its edges, whether it carries `optional: true`, and everything else as text. */
 function snapshotEntry(block) {
-  const fields = /:\s*\{\}\s*$/.test(block.lines[0]) ? new Map() : entryFields(block);
+  const fields = entryFields(block);
   const flag = fields.has('optional') ? blockText(fields.get('optional')).trim() : null;
   const rest = [...fields].filter(([field]) => !['dependencies', 'optionalDependencies'].includes(field) && !(field === 'optional' && flag === 'optional: true'));
   return {
+    fields: [...fields.keys()],
     dependencies: yamlPairs(fields.get('dependencies'), 6),
     optionalDependencies: yamlPairs(fields.get('optionalDependencies'), 6),
     optional: flag === 'optional: true',
     rest: rest.map(([, field]) => blockText(field)).join('\n'),
   };
+}
+
+/**
+ * Why a snapshots entry a pin adds is not an install of that version as its registry publishes it, or null:
+ *   - only the fields pnpm writes, and `optional` only as `optional: true`;
+ *   - under dependencies, only names the registry lists in the version's dependencies, or a peer the entry does not
+ *     mark optional; under optionalDependencies, only its optionalDependencies, or a peer the entry marks optional
+ *     (flags checked against the package's own package.json, peerMetaRefusal); no name under both.
+ * That every edge names a snapshot the lockfile has, that something depends on the entry and that its `optional: true`
+ * is the graph's are checked for the whole lockfile (lockGraph). Not checked: that the version an edge points at
+ * satisfies the declared range, and the peer suffix in the key.
+ */
+function newSnapshotRefusal(block, declared, optional) {
+  const entry = snapshotEntry(block);
+  const unknown = entry.fields.find((field) => !SNAPSHOT_FIELDS.has(field));
+  if (unknown !== undefined || (entry.fields.includes('optional') && !entry.optional)) return `has ${unknown ?? 'an optional that is not true'}, which pnpm does not write on a snapshot`;
+  const dependencies = names(declared?.dependencies), optionals = names(declared?.optionalDependencies), peers = names(declared?.peerDependencies);
+  for (const name of entry.dependencies.keys()) {
+    if (entry.optionalDependencies.has(name)) return `lists ${name} under dependencies and optionalDependencies`;
+    if (!dependencies.has(name) && !(peers.has(name) && !optional.has(name))) return `depends on ${name}, which the registry does not list as a dependency or required peer of it`;
+  }
+  for (const name of entry.optionalDependencies.keys()) {
+    if (!optionals.has(name) && !(peers.has(name) && optional.has(name))) return `optionally depends on ${name}, which the registry does not list as an optional dependency or optional peer of it`;
+  }
+  return null;
 }
 
 /** The snapshots key a dependency reference names (pnpm's refToRelative), or null for a link. */
@@ -701,43 +933,62 @@ function snapshotKey(name, reference) {
 }
 
 /**
- * The snapshots a lockfile's own graph requires: reachable from an importer's dependencies or devDependencies through
- * snapshots' dependencies. pnpm marks every other snapshot `optional: true`.
+ * A lockfile's own dependency graph:
+ *   required    the snapshots reachable from an importer's dependencies or devDependencies through snapshots'
+ *               dependencies; pnpm marks every other snapshot `optional: true`;
+ *   referenced  every snapshot an importer or a snapshot depends on, optionally or not;
+ *   dangling    a referenced key the lockfile has no snapshot for, or undefined.
  */
-export function requiredSnapshots(importers, snapshots) {
-  const queue = [];
+export function lockGraph(importers, snapshots) {
+  const roots = [], referenced = new Set(), edges = new Map();
   for (const importer of importers.values()) {
     const fields = entryFields(importer);
-    for (const field of ['dependencies', 'devDependencies']) {
+    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
       for (const dep of fields.has(field) ? yamlBlocks(fields.get(field).lines.slice(1), 6) : []) {
         const version = yamlPairs(dep, 8).get('version');
-        if (dep.key !== null && version !== undefined) queue.push(snapshotKey(dep.key, version));
+        const key = dep.key !== null && version !== undefined ? snapshotKey(dep.key, version) : null;
+        if (key === null) continue;
+        referenced.add(key);
+        if (field !== 'optionalDependencies') roots.push(key);
       }
     }
   }
-  const required = new Set();
-  while (queue.length) {
-    const key = queue.pop();
-    if (key === null || required.has(key) || !snapshots.has(key)) continue;
-    required.add(key);
-    for (const [name, reference] of snapshotEntry(snapshots.get(key)).dependencies) queue.push(snapshotKey(name, reference));
+  for (const [key, block] of snapshots) {
+    const entry = snapshotEntry(block);
+    const keys = (pairs) => [...pairs].map(([name, reference]) => snapshotKey(name, reference)).filter((target) => target !== null);
+    edges.set(key, keys(entry.dependencies));
+    for (const target of [...edges.get(key), ...keys(entry.optionalDependencies)]) referenced.add(target);
   }
-  return required;
+  const required = new Set();
+  while (roots.length) {
+    const key = roots.pop();
+    if (required.has(key) || !edges.has(key)) continue;
+    required.add(key);
+    roots.push(...edges.get(key));
+  }
+  return { required, referenced, dangling: [...referenced].find((key) => !snapshots.has(key)) };
 }
+/** The snapshots a lockfile's own graph requires (lockGraph). */
+export const requiredSnapshots = (importers, snapshots) => lockGraph(importers, snapshots).required;
 
 /**
- * A pnpm-lock.yaml change that only re-pins: every section but importers, packages and snapshots unchanged; in the
+ * A pnpm-lock.yaml change that only re-pins. Both files must be in the form pnpm writes (pnpmFormRefusal), checked
+ * before anything is read from them. Then: every section but importers, packages and snapshots unchanged; in the
  * importers only the pinned packages' specifier and version change (the version to exactly the pin, peers allowed);
- * in packages and snapshots only the pinned packages' entries go and come, the new ones exactly at the pin, and a
- * new packages entry's resolution is the registry's.
+ * in packages and snapshots only the pinned packages' entries go and come, the new ones exactly at the pin: a new
+ * packages entry has the registry's resolution and peers (newPackageRefusal), a new snapshots entry only edges the
+ * registry declares for that version (newSnapshotRefusal).
  *
  * An entry that stays may change in one way, which pnpm does on its own whenever it runs (packagesEntryRefusal): which
- * peers of a @revt-eng package are optional. What follows from that is allowed and nothing else: in that package's
- * snapshots, exactly the peers whose flag differs move between dependencies and optionalDependencies, at the same
- * versions; and a snapshot gains or loses `optional: true` only when the new lockfile's own graph says so
- * (requiredSnapshots). No entry is added, dropped or resolved differently by it.
+ * peers of a @revt-eng package are optional, to none or to exactly what the package's own package.json says. What
+ * follows from that is allowed and nothing else: in that package's snapshots, exactly the peers whose flag differs
+ * move between dependencies and optionalDependencies, at the same versions; and a snapshot gains or loses
+ * `optional: true` only when the new lockfile's own graph says so (lockGraph). In the new lockfile every edge names a
+ * snapshot it has, and something depends on every snapshot the pin adds.
  */
-export function pnpmLockRefusal(file, beforeText, afterText, pins, registry) {
+export function pnpmLockRefusal(file, beforeText, afterText, pins, registry, manifests = new Map()) {
+  const malformed = pnpmFormRefusal(`${file} on the branch`, beforeText) ?? pnpmFormRefusal(file, afterText);
+  if (malformed) return malformed;
   const pinned = new Map(pins.map((pin) => [pin.name, pin.version]));
   const top = (text) => byKey(yamlBlocks(text.split(/\r?\n/), 0));
   const before = top(beforeText), after = top(afterText);
@@ -776,8 +1027,9 @@ export function pnpmLockRefusal(file, beforeText, afterText, pins, registry) {
     }
   }
   const entries = (lock, section) => (lock.get(section) ? level(lock.get(section), 2) : new Map());
-  const packagesA = entries(before, 'packages'), packagesB = entries(after, 'packages');
-  const flips = [];
+  const packagesA = entries(before, 'packages'), packagesB = entries(after, 'packages'), snapshotsB = entries(after, 'snapshots');
+  /** The snapshots whose `optional: true` must be the graph's: the ones that changed it, and the ones the pin adds. */
+  const flips = [], added = [];
   /** Why a snapshots entry that keeps its key may not change, or null; `flips` collects a changed `optional: true`. */
   const snapshotRefusal = (key, blockA, blockB) => {
     const a = snapshotEntry(blockA), b = snapshotEntry(blockB);
@@ -789,8 +1041,8 @@ export function pnpmLockRefusal(file, beforeText, afterText, pins, registry) {
       const parsed = packageKey(key);
       const entry = parsed && SCOPED.test(parsed.name) ? `${parsed.name}@${parsed.version}` : null;
       if (!entry || !packagesA.has(entry) || !packagesB.has(entry)) return 'changes';
-      const was = optionalPeers(packagesA.get(entry)).names, now = optionalPeers(packagesB.get(entry)).names;
-      const stray = moved.find((name) => !was || !now || was.has(name) !== a.optionalDependencies.has(name) || now.has(name) !== b.optionalDependencies.has(name));
+      const was = optionalPeerNames(packagesA.get(entry)), now = optionalPeerNames(packagesB.get(entry));
+      const stray = moved.find((name) => was.has(name) !== a.optionalDependencies.has(name) || now.has(name) !== b.optionalDependencies.has(name));
       if (stray !== undefined) return `moves ${stray} between dependencies and optionalDependencies, which its peers' optional flags do not explain`;
     }
     if (a.optional !== b.optional) flips.push(key);
@@ -801,7 +1053,7 @@ export function pnpmLockRefusal(file, beforeText, afterText, pins, registry) {
     for (const [key, block] of a) {
       if (b.has(key)) {
         if (blockText(block) === blockText(b.get(key))) continue;
-        const refused = section === 'packages' ? packagesEntryRefusal(key, block, b.get(key)) : snapshotRefusal(key, block, b.get(key));
+        const refused = section === 'packages' ? packagesEntryRefusal(key, block, b.get(key), manifests) : snapshotRefusal(key, block, b.get(key));
         if (refused) return `${file}: ${section} ${key} ${refused}`;
         continue;
       }
@@ -812,21 +1064,69 @@ export function pnpmLockRefusal(file, beforeText, afterText, pins, registry) {
       if (a.has(key)) continue;
       const parsed = packageKey(key);
       if (!parsed || pinned.get(parsed.name) !== parsed.version) return `${file}: ${section} adds ${key}, which is not a pinned package at its pin`;
-      if (section !== 'packages') continue;
-      const resolution = block.lines.map((line) => line.trim()).find((line) => line.startsWith('resolution: '));
-      const integrity = /integrity: ([^,}\s]+)/.exec(resolution ?? '')?.[1];
-      const tarball = /tarball: ([^,}\s]+)/.exec(resolution ?? '')?.[1];
-      const refused = resolutionRefusal(`${file} packages ${key}`, parsed.name, parsed.version, integrity, tarball, registry);
-      if (refused) return refused;
+      const declared = registry?.get(parsed.name)?.[parsed.version];
+      if (section === 'packages') {
+        const { integrity, tarball } = entryResolution(block);
+        const refused = resolutionRefusal(`${file} packages ${key}`, parsed.name, parsed.version, integrity, tarball, registry);
+        if (refused) return refused;
+        const shaped = newPackageRefusal(key, block, declared, manifests);
+        if (shaped) return `${file}: packages ${key} ${shaped}`;
+        continue;
+      }
+      const entry = `${parsed.name}@${parsed.version}`;
+      if (!declared || !packagesB.has(entry)) return `${file}: snapshots ${key} is of a package the lockfile or the registry does not have`;
+      const refused = newSnapshotRefusal(block, declared, optionalPeerNames(packagesB.get(entry)));
+      if (refused) return `${file}: snapshots ${key} ${refused}`;
+      added.push(key);
     }
   }
-  if (flips.length) {
-    const snapshots = entries(after, 'snapshots');
-    const required = requiredSnapshots(importersB, snapshots);
-    const stray = flips.find((key) => snapshotEntry(snapshots.get(key)).optional === required.has(key));
-    if (stray !== undefined) return `${file}: snapshots ${stray} changes whether it is optional, which the lockfile's dependencies do not explain`;
-  }
+  const graph = lockGraph(importersB, snapshotsB);
+  if (graph.dangling !== undefined) return `${file}: ${graph.dangling} is depended on, and the lockfile has no snapshot of it`;
+  const orphan = added.find((key) => !graph.referenced.has(key));
+  if (orphan !== undefined) return `${file}: snapshots adds ${orphan}, which nothing depends on`;
+  const stray = [...flips, ...added].find((key) => snapshotEntry(snapshotsB.get(key)).optional === graph.required.has(key));
+  if (stray !== undefined) return `${file}: snapshots ${stray} ${added.includes(stray) ? 'is' : 'changes whether it is'} optional, which the lockfile's dependencies do not explain`;
   return null;
+}
+
+/**
+ * The @revt-eng packages entries of a new pnpm-lock.yaml whose optional peers have to be checked against the package
+ * itself: entries with a peerDependenciesMeta the branch head's lockfile does not have in that form. Each is
+ * { key, integrity, tarball }, read from the entry's resolution, and only when that is a sha512 and a GitHub Packages
+ * download URL of exactly that name and version; anything else is left out and so refused by the check. At most 32.
+ */
+export function peerMetaToVerify(beforeText, afterText) {
+  if (pnpmFormRefusal('', beforeText) || pnpmFormRefusal('', afterText)) return [];
+  const packages = (text) => { const top = byKey(yamlBlocks(text.split('\n'), 0)); return top.has('packages') ? byKey(yamlBlocks(top.get('packages').lines.slice(1), 2)) : new Map(); };
+  const was = packages(beforeText), entries = [];
+  for (const [key, block] of packages(afterText)) {
+    const parsed = packageKey(key), meta = entryFields(block).get('peerDependenciesMeta');
+    if (!parsed || !SCOPED.test(parsed.name) || !meta) continue;
+    const old = was.has(key) ? entryFields(was.get(key)).get('peerDependenciesMeta') : undefined;
+    if (old && blockText(old) === blockText(meta)) continue;
+    const { integrity, tarball } = entryResolution(block);
+    const download = new RegExp(`^https://npm\\.pkg\\.github\\.com/download/${escapeRe(parsed.name)}/${escapeRe(parsed.version)}/[0-9a-f]+$`);
+    if (/^sha512-[A-Za-z0-9+/]+=*$/.test(integrity ?? '') && download.test(tarball ?? '')) entries.push({ key, integrity, tarball });
+  }
+  return entries.slice(0, 32);
+}
+
+/** package/package.json of an npm tarball (a gzipped tar), parsed. The last one wins, as it does when unpacked. */
+export function tarballManifest(tgz) {
+  const tar = gunzipSync(tgz, { maxOutputLength: 512 * 1024 * 1024 });
+  let found = null;
+  for (let at = 0; at + 512 <= tar.length;) {
+    const header = tar.subarray(at, at + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const field = (from, to) => { const end = header.indexOf(0, from); return header.toString('utf8', from, end < 0 || end > to ? to : end); };
+    const size = parseInt(field(124, 136).trim() || '0', 8);
+    if (!Number.isSafeInteger(size) || size < 0) throw new Error('the tarball is not a tar archive');
+    const type = header[156] === 0 ? '0' : String.fromCharCode(header[156]);
+    if (type === '0' && `${field(345, 500) ? `${field(345, 500)}/` : ''}${field(0, 100)}` === 'package/package.json') found = tar.toString('utf8', at + 512, at + 512 + size);
+    at += 512 + Math.ceil(size / 512) * 512;
+  }
+  if (found === null) throw new Error('the tarball has no package/package.json');
+  return JSON.parse(found);
 }
 
 /** Refusal unless a new .release-pins.json keeps the head's records and adds or drops only pinned packages'. */
@@ -852,7 +1152,7 @@ export function recordsRefusal(beforeRecords, afterText, pins) {
  * The push job's check and commit (see the header). `git(args, input)` runs git against the bare repository and
  * returns stdout; nothing from the Release branch is executed.
  */
-export function commitBundle({ bundle, tip, pins, release, n, git, registry = new Map() }) {
+export function commitBundle({ bundle, tip, pins, release, n, git, registry = new Map(), manifests = new Map() }) {
   const manifest = JSON.parse(readFileSync(path.join(bundle, 'manifest.json'), 'utf8'));
   if (manifest.base !== tip) return { moved: true, reason: `the branch moved from ${manifest.base} to ${tip} after the pin` };
   if (manifest.release !== release) throw new Error(`the bundle is for ${manifest.release}, not ${release}`);
@@ -886,7 +1186,7 @@ export function commitBundle({ bundle, tip, pins, release, n, git, registry = ne
     else if (name === 'package.json') refused = manifestPinRefusal(file, before, after, pins, n, records);
     else if (name === 'pnpm-workspace.yaml') refused = workspacePinRefusal(file, before, after, pins);
     else if (name === 'package-lock.json' || name === 'npm-shrinkwrap.json') refused = npmLockRefusal(file, before, after, pins, registry);
-    else if (name === 'pnpm-lock.yaml') refused = pnpmLockRefusal(file, before, after, pins, registry);
+    else if (name === 'pnpm-lock.yaml') refused = pnpmLockRefusal(file, before, after, pins, registry, manifests);
     else refused = `${file} is not a file a pin changes`;
     if (refused) throw new Error(refused);
     const mode = before === null ? '100644' : git(['ls-tree', tip, '--', file]).split(/\s/)[0];
@@ -921,8 +1221,9 @@ export class RegistryUnavailable extends Error {}
 
 /**
  * The registry entries of the pinned packages, name -> { [version]: { integrity, tarball } }: GitHub Packages for
- * @revt-eng/* (REGISTRY_TOKEN, packages: read), npm for the rest. Fails closed: an entry it cannot read throws
- * RegistryUnavailable.
+ * @revt-eng/* (REGISTRY_TOKEN, packages: read), npm for the rest. A version also carries the dependencies,
+ * optionalDependencies and peerDependencies its registry lists, when it lists them. Fails closed: an entry it cannot
+ * read throws RegistryUnavailable.
  */
 export async function readRegistry(pins, { token = process.env.REGISTRY_TOKEN, fetchImpl = fetch } = {}) {
   const registry = new Map();
@@ -935,13 +1236,52 @@ export async function readRegistry(pins, { token = process.env.REGISTRY_TOKEN, f
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const packument = await response.json();
       const versions = {};
-      for (const [version, entry] of Object.entries(packument.versions ?? {})) versions[version] = { integrity: entry?.dist?.integrity, tarball: entry?.dist?.tarball };
+      for (const [version, entry] of Object.entries(packument.versions ?? {})) {
+        versions[version] = { integrity: entry?.dist?.integrity, tarball: entry?.dist?.tarball };
+        for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) if (entry?.[field] && typeof entry[field] === 'object') versions[version][field] = entry[field];
+      }
       registry.set(name, versions);
     } catch (error) {
       throw new RegistryUnavailable(`could not read ${name} from its registry (${error.message})`);
     }
   }
   return registry;
+}
+
+/**
+ * The package.json of each tarball in `entries` (peerMetaToVerify), name@version -> { integrity, manifest }. The
+ * tarball is downloaded from GitHub Packages (REGISTRY_TOKEN), and its sha512 must be the integrity the lockfile
+ * records. Fails closed: a tarball it cannot download throws RegistryUnavailable; one with another hash, or without a
+ * package.json, is an error.
+ */
+export async function readManifests(entries, { token = process.env.REGISTRY_TOKEN, fetchImpl = fetch } = {}) {
+  const manifests = new Map();
+  for (const entry of entries) {
+    let bytes;
+    try {
+      const response = await fetchImpl(entry.tarball, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      bytes = Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      throw new RegistryUnavailable(`could not read the tarball of ${entry.key} (${error.message})`);
+    }
+    if (`sha512-${createHash('sha512').update(bytes).digest('base64')}` !== entry.integrity) throw new Error(`the tarball of ${entry.key} does not have the integrity the lockfile records`);
+    manifests.set(entry.key, { integrity: entry.integrity, manifest: tarballManifest(bytes) });
+  }
+  return manifests;
+}
+
+/** The entries to verify (peerMetaToVerify) across the pnpm lockfiles of a bundle pinned on `tip`. */
+export function bundlePeerMeta(bundle, tip, git) {
+  const manifest = JSON.parse(readFileSync(path.join(bundle, 'manifest.json'), 'utf8'));
+  const entries = new Map();
+  for (const entry of manifest.base === tip && Array.isArray(manifest.files) ? manifest.files : []) {
+    if (!pinnablePath(entry?.path) || path.posix.basename(entry.path) !== 'pnpm-lock.yaml' || entry.deleted !== false) continue;
+    let before;
+    try { before = git(['cat-file', 'blob', `${tip}:${entry.path}`]); } catch { continue; }
+    for (const found of peerMetaToVerify(before, readFileSync(path.join(bundle, 'files', entry.path), 'utf8'))) entries.set(`${found.key} ${found.integrity}`, found);
+  }
+  return [...entries.values()].slice(0, 32);
 }
 
 async function main(argv) {
@@ -967,15 +1307,17 @@ async function main(argv) {
       if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
       return result.stdout;
     };
-    let registry;
+    const bundle = path.resolve(options.bundle);
+    let registry, manifests;
     try {
       registry = await readRegistry(pins);
+      manifests = await readManifests(bundlePeerMeta(bundle, options.tip, git));
     } catch (error) {
       if (!(error instanceof RegistryUnavailable)) throw error;
       console.error(`::warning::release-pin: ${error.message}; nothing is committed, and the next attempt tries again.`);
       process.exit(75);
     }
-    process.stdout.write(`${JSON.stringify(commitBundle({ bundle: path.resolve(options.bundle), tip: options.tip, pins, release, n, git, registry }))}\n`);
+    process.stdout.write(`${JSON.stringify(commitBundle({ bundle, tip: options.tip, pins, release, n, git, registry, manifests }))}\n`);
     return;
   }
   if (command !== 'apply') throw new Error('usage: release-pin.mjs check|apply|commit|package-manager --branch release/RL-<n> --packages "<name>@<version> ..."');
