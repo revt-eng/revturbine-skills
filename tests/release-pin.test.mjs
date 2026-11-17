@@ -458,7 +458,7 @@ test('a pnpm-lock.yaml may re-pin only the pinned importers, packages and snapsh
   assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new').replace("        specifier: 19.2.7\n        version: 19.2.7", "        specifier: 19.2.8\n        version: 19.2.8"), pins, registry), /changes react, which is not being pinned/);
   assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new').replace('  react@19.2.7:\n    resolution: {integrity: sha512-react}', '  react@19.2.7:\n    resolution: {integrity: sha512-evil}'), pins, registry), /packages react@19\.2\.7 changes/);
   assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new').replace('  react@19.2.7: {}', '  react@19.2.7: {}\n\n  evil@1.0.0: {}'), pins, registry), /adds evil@1\.0\.0/);
-  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new', { extraImporterLine: '        evil: true' }), pins, registry), /more than a specifier and a version/);
+  assert.match(pnpmLockRefusal('pnpm-lock.yaml', before, pnpmLock('1.4.0', 'sha512-new', { extraImporterLine: '        evil: yes' }), pins, registry), /more than a specifier and a version/);
 });
 
 test('the registry entries are read per package, and an unreadable one stops the attempt', async () => {
@@ -566,12 +566,12 @@ test('optional peers are what the package itself says, read from its tarball, or
 /** A gzipped tar with these files, as npm packs one. */
 function tarball(files) {
   const blocks = [];
-  for (const [name, content] of files) {
+  for (const [name, content, type = '0'] of files) {
     const header = Buffer.alloc(512), body = Buffer.from(content);
     header.write(name, 0);
     header.write('0000644\0', 100); header.write('0000000\0', 108); header.write('0000000\0', 116);
     header.write(`${body.length.toString(8).padStart(11, '0')}\0`, 124);
-    header.write('00000000000\0', 136); header.write('        ', 148); header.write('0', 156); header.write('ustar\0' + '00', 257);
+    header.write('00000000000\0', 136); header.write('        ', 148); header.write(type, 156); header.write('ustar\0' + '00', 257);
     header.write(`${[...header].reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, '0')}\0 `, 148);
     blocks.push(header, body, Buffer.alloc((512 - (body.length % 512)) % 512));
   }
@@ -618,7 +618,8 @@ test('a snapshot or package a pin adds is that version as the registry publishes
   assert.match(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n    optional: true`)), /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\) is optional, which the lockfile's dependencies do not explain/);
   // The reviewer's probes: a second snapshot of the pinned package that nothing depends on, with or without new edges.
   assert.match(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n      drizzle-orm: 0.45.2\n\n  '@revt-eng/sdk@1.4.0(evil)':\n    dependencies:\n      drizzle-orm: 0.45.2`)), /depends on drizzle-orm, which the registry does not list/);
-  assert.match(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n\n  '@revt-eng/sdk@1.4.0(react@18)':\n    dependencies:\n      react: 19.2.7\n      zod: 4.0.0`)), /snapshots adds @revt-eng\/sdk@1\.4\.0\(react@18\), which nothing depends on/);
+  assert.match(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n\n  '@revt-eng/sdk@1.4.0(react@18)':\n    dependencies:\n      react: 19.2.7\n      zod: 4.0.0`)), /snapshots @revt-eng\/sdk@1\.4\.0\(react@18\) has a peer suffix that does not match its peer react/);
+  assert.match(peerRefusal(peerBefore, withSnapshot(`${sdkSnapshot}\n\n  '@revt-eng/sdk@1.4.0':\n    dependencies:\n      zod: 4.0.0`)), /snapshots adds @revt-eng\/sdk@1\.4\.0, which nothing depends on/);
   // The importer must point at a snapshot too.
   assert.match(peerRefusal(peerBefore, peerAfter().replace('version: 1.4.0(react@19.2.7)', 'version: 1.4.0(react@18.0.0)')), /@revt-eng\/sdk@1\.4\.0\(react@18\.0\.0\) is depended on, and the lockfile has no snapshot of it/);
   // The new packages entry: the registry's peers, only fields pnpm writes.
@@ -725,4 +726,227 @@ test('a pnpm-lock.yaml is read only in the form pnpm writes', () => {
   refusedForm(swap("    peerDependencies:\n      drizzle-orm: '>=0.30.0'", '    peerDependencies:\n      - drizzle-orm'), 'peerDependencies as a list');
   refusedForm(swap('    resolution: {integrity: sha512-zod}', '    resolution:\n      integrity: sha512-zod'), 'a resolution on the lines below');
   refusedForm(swap('  react@19.2.7:\n    resolution: {integrity: sha512-react}', '  react@19.2.7: {}'), 'an empty packages entry');
+});
+
+// Second review: the check read a resolution with its own patterns, after the form check had passed it, and the two
+// could be made to disagree. Now one tokenizer (parsePnpmLock) reads the file and every rule works on its tree.
+import * as nodeFs from 'node:fs';
+import nodeOs from 'node:os';
+import nodePath from 'node:path';
+import { commitBundle as commitPinBundle, gitOutputTooLarge, inRange, parsePnpmLock, workspacePinRefusal as workspaceRefusal } from '../scripts/release-pin.mjs';
+
+const sdkTarball = ghTarball('@revt-eng/sdk', '1.4.0');
+const sdkResolution = `    resolution: {integrity: sha512-new, tarball: ${sdkTarball}}`;
+/** A parsed lockfile value as plain data, and the value at a path in it. */
+function plainTree(node) {
+  if (node instanceof Map) return Object.fromEntries([...node].map(([key, value]) => [key, plainTree(value)]));
+  return Array.isArray(node) ? node.map(plainTree) : node;
+}
+const at = (node, ...keys) => keys.reduce((value, key) => value?.[key], node);
+/** Refused as not in pnpm's form: by the form check, as the bundle's lockfile and as the branch head's. */
+const notPnpmForm = (text, message) => {
+  assert.match(String(pnpmFormRefusal('pnpm-lock.yaml', text)), /is not in the form pnpm writes/, message);
+  assert.notEqual(parsePnpmLock(text).error, undefined, message);
+  assert.match(String(peerRefusal(peerBefore, text)), /^pnpm-lock\.yaml (line \d+ )?is not in the form pnpm writes/, message);
+  assert.match(String(peerRefusal(text, peerAfter())), /^pnpm-lock\.yaml on the branch (line \d+ )?is not in the form pnpm writes/, message);
+};
+const swapIn = (from, to, text = peerAfter()) => { assert.ok(text.includes(from), from); return text.replace(from, to); };
+
+test('a resolution is {integrity} or {integrity, tarball}, whole values, read once', () => {
+  const withResolution = (resolution) => swapIn(sdkResolution, `    resolution: ${resolution}`);
+  assert.equal(peerRefusal(peerBefore, withResolution(`{integrity: sha512-new, tarball: ${sdkTarball}}`)), null);
+  for (const resolution of [
+    // The reviewer's five: the registry's values under decoy keys or ahead of a space, while pnpm reads the others.
+    `{xintegrity: sha512-new, xtarball: ${sdkTarball}, integrity: sha512-EVIL, tarball: https://evil.example/sdk.tgz}`,
+    `{xintegrity: sha512-new, xtarball: ${sdkTarball}, tarball: https://evil.example/sdk.tgz}`,
+    `{xintegrity: sha512-new, type: git, repo: https://evil.example/r.git, commit: deadbeef}`,
+    `{integrity: sha512-new sha512-EVIL, tarball: ${sdkTarball}}`,
+    `{integrity: sha512-new, tarball: ${sdkTarball} x}`,
+    // Their neighbours: a key missing, twice, quoted or unknown; a value quoted or not one token; a map that is not closed.
+    `{tarball: ${sdkTarball}}`, '{integrity: sha512-new, integrity: sha512-EVIL}', `{integrity: 'sha512-new', tarball: ${sdkTarball}}`, "{'integrity': sha512-new}",
+    `{integrity: sha512-new, tarball: ${sdkTarball}, type: directory}`, '{integrity: sha512-new, tarball: http://npm.pkg.github.com/x}', `{integrity: sha512-new, tarball: ${sdkTarball}?x=1}`,
+    `{integrity: sha512-new, tarball: ${sdkTarball}#x}`, `{integrity: sha512-new,tarball: ${sdkTarball}}`, '{integrity: md5-abc}', '{integrity: sha512-new', '{integrity: sha512-new} x', '{', '{}', '{ }',
+  ]) notPnpmForm(withResolution(resolution), resolution);
+  // A bare `{` does not take the lines below into the mapping, as it does for pnpm.
+  notPnpmForm(swapIn(sdkResolution, `${sdkResolution}\n    engines: {\n    hasBin: true}`), 'engines: { ... }');
+  notPnpmForm(swapIn(sdkResolution, `${sdkResolution}\n    engines: {\n    hasBin: x,\n    deprecated: y}`), 'engines: { ..., ... }');
+  notPnpmForm(swapIn(sdkResolution, `    engines: {\n    hasBin: x,\n${sdkResolution.slice(0, -1)}`), 'engines: { swallowing the resolution');
+  notPnpmForm(swapIn(sdkResolution, `${sdkResolution}\n    engines: {node: '>=18'`), 'engines not closed');
+  notPnpmForm(swapIn(sdkResolution, `${sdkResolution}\n    cpu: [x64`), 'a list not closed');
+
+  // What the tokenizer read is the value the check compares, whole, with the registry's.
+  assert.deepEqual(at(plainTree(parsePnpmLock(peerAfter()).lock), 'packages', '@revt-eng/sdk@1.4.0', 'resolution'), { integrity: 'sha512-new', tarball: sdkTarball });
+  assert.match(peerRefusal(peerBefore, withResolution(`{integrity: sha512-newer, tarball: ${sdkTarball}}`)), /the integrity of @revt-eng\/sdk@1\.4\.0 differs from the registry's/);
+  assert.match(peerRefusal(peerBefore, withResolution(`{integrity: sha512-new, tarball: ${sdkTarball}0}`)), /not the registry's/);
+  assert.match(peerRefusal(peerBefore, withResolution(`{tarball: ${sdkTarball}, integrity: sha512-newer}`)), /differs from the registry's/);
+  assert.match(peerRefusal(peerBefore, withResolution('{integrity: sha512-new}')), /packages @revt-eng\/sdk@1\.4\.0 does not resolve from the GitHub Packages download of that name and version/);
+  // An entry of the pinned version that the branch already had, waiting for the pin to point at it, is held to the registry too.
+  const seeded = peerAfter().replace('{integrity: sha512-new, tarball', '{integrity: sha512-evil, tarball');
+  assert.match(peerRefusal(swapIn('specifier: 1.4.0\n        version: 1.4.0(react@19.2.7)', 'specifier: 1.3.0\n        version: 1.3.0(react@19.2.7)', seeded), seeded), /the integrity of @revt-eng\/sdk@1\.4\.0 differs from the registry's/);
+  // An entry the pin does not add keeps its resolution, value for value.
+  assert.match(peerRefusal(peerBefore, swapIn('{integrity: sha512-react}', '{integrity: sha512-evil}')), /packages react@19\.2\.7 changes/);
+  assert.match(peerRefusal(peerBefore, swapIn('{integrity: sha512-react}', '{integrity: sha512-react, tarball: https://evil.example/react.tgz}')), /packages react@19\.2\.7 changes/);
+  assert.match(peerRefusal(peerBefore, swapIn('{integrity: sha512-core, tarball', '{integrity: sha512-evil, tarball')), /packages @revt-eng\/core@1\.0\.0-rl\.7\.2 changes more than which of its peers are optional/);
+});
+
+test('the tokenizer is the form check, and reads each value as pnpm does', () => {
+  const text = swapIn('  zod@4.0.0:\n    resolution: {integrity: sha512-zod}', [
+    '  zod@4.0.0:', '    resolution: {integrity: sha512-zod, tarball: https://registry.npmjs.org/zod/-/zod-4.0.0.tgz}', "    engines: {node: ^18.0.0 || >=20.0.0, npm: '>=9'}", '    cpu: [x64, arm64]',
+    "    os: ['!win32']", '    hasBin: true', '    deprecated: "a\\tb \\"c\\" \\\\ \\/ \\x41 \\u00e9 \\U0001F600 \\N"', '    bundledDependencies:', '      - tslib', "      - '@scope/dep'", '',
+    '  ansi@0.0.8:', '    resolution: {integrity: sha512-ansi}', "    engines: {'0': node >= 0.8.0}", "    deprecated: 'Renamed: use ''zod-next'''"].join('\n'));
+  const { lock, error } = parsePnpmLock(text);
+  assert.equal(error, undefined);
+  assert.equal(pnpmFormRefusal('pnpm-lock.yaml', text), null);
+  const tree = plainTree(lock);
+  assert.deepEqual([...(lock ?? new Map()).keys()], ['lockfileVersion', 'settings', 'importers', 'packages', 'snapshots']);
+  assert.deepEqual([at(tree, 'lockfileVersion'), at(tree, 'settings')], ['9.0', { autoInstallPeers: true }]);
+  assert.deepEqual(at(tree, 'importers', '.', 'dependencies', 'react'), { specifier: '19.2.7', version: '19.2.7' });
+  assert.deepEqual(at(tree, 'packages', 'zod@4.0.0'), {
+    resolution: { integrity: 'sha512-zod', tarball: 'https://registry.npmjs.org/zod/-/zod-4.0.0.tgz' }, engines: { node: '^18.0.0 || >=20.0.0', npm: '>=9' }, cpu: ['x64', 'arm64'], os: ['!win32'], hasBin: true,
+    deprecated: 'a\tb "c" \\ / A é \u{1f600} \u0085', bundledDependencies: ['tslib', '@scope/dep'],
+  });
+  assert.deepEqual(at(tree, 'packages', 'ansi@0.0.8'), { resolution: { integrity: 'sha512-ansi' }, engines: { 0: 'node >= 0.8.0' }, deprecated: "Renamed: use 'zod-next'" });
+  assert.deepEqual(at(tree, 'packages', '@revt-eng/core@1.0.0-rl.7.2', 'peerDependenciesMeta'), { 'drizzle-orm': { optional: true } });
+  assert.deepEqual([at(tree, 'snapshots', 'react@19.2.7'), at(tree, 'snapshots', 'drizzle-orm@0.45.2')], [{}, { optional: true }]);
+  // A refusal is the tokenizer's error, with its line.
+  const bad = text.replace('    hasBin: true', '    hasBin: yes');
+  const line = bad.split('\n').indexOf('    hasBin: yes') + 1;
+  assert.deepEqual(parsePnpmLock(bad), { lock: undefined, error: { line, why: 'hasBin is not written as pnpm writes it there' } });
+  assert.equal(pnpmFormRefusal('f', bad), `f line ${line} is not in the form pnpm writes (hasBin is not written as pnpm writes it there), so it cannot be checked`);
+
+  // No accepted file that pnpm cannot parse: escapes js-yaml does not read, list items it does not take, values it types otherwise.
+  const zod = '    resolution: {integrity: sha512-zod}';
+  for (const line of ['deprecated: "a\\qb"', 'deprecated: "\\x4"', 'deprecated: "\\u12"', 'deprecated: "\\U00110000"', 'deprecated: "a\\"', 'deprecated: "a"b"', 'deprecated: "a" x', 'deprecated: "a', 'deprecated: 12',
+    'os: [a, -]', 'os: [-, a]', 'os: [a, 1]', 'os: [a, null]', 'os: [a, true]', 'os: [a,b]', 'os: []', 'os: [a, [b]]', "os: [a, 'b c']", 'os: [a, ]',
+    "hasBin: 'true'", 'hasBin: false', 'hasBin: 1', 'engines: {node: null}', 'engines: {node: 1}', 'engines: {node: true}', 'engines: {node: ~}', 'engines: {node: a, node: b}', 'engines: {node: {a: b}}',
+    'bundledDependencies:\n      - 1', 'bundledDependencies:\n      - true', 'bundledDependencies:\n      - a: b', 'bundledDependencies:\n    - a']) notPnpmForm(swapIn(zod, `${zod}\n    ${line}`), line);
+  notPnpmForm(swapIn('      react:\n        specifier: 19.2.7', '      __proto__:\n        specifier: 19.2.7'), '__proto__ as a key');
+  notPnpmForm(swapIn('        specifier: 19.2.7', '        specifier: a\ud800b'), 'half a surrogate pair');
+  notPnpmForm(swapIn('        specifier: 19.2.7', '        specifier: a￾b'), 'a non-character');
+  notPnpmForm(swapIn('        specifier: 19.2.7', '        specifier: 19'), 'a number where pnpm writes a string');
+  notPnpmForm(swapIn('      react: 19.2.7\n\n  drizzle', '      react: true\n\n  drizzle'), 'a boolean where pnpm writes a reference');
+});
+
+test('a key is acted on only as a name and an exact version', () => {
+  // A version that walks out of the package's path: the download URL fits the pattern and fetch would normalise it to another package.
+  const key = '@revt-eng/core@1.0.0-rl.7.2/../../../@other-org/pkg/9.9.9', url = 'https://npm.pkg.github.com/download/@revt-eng/core/1.0.0-rl.7.2/../../../@other-org/pkg/9.9.9/abc123';
+  const walk = (text) => text.replace("  '@revt-eng/core@1.0.0-rl.7.2':", `  '${key}':`).replace(ghTarball('@revt-eng/core', '1.0.0-rl.7.2'), url).replaceAll('sha512-core', 'sha512-Y29yZQ==');
+  assert.equal(pnpmFormRefusal('pnpm-lock.yaml', walk(peerAfter())), null);
+  assert.deepEqual(peerMetaToVerify(walk(peerBefore), walk(peerAfter())), []);
+  assert.match(String(peerRefusal(walk(peerBefore), walk(peerAfter()))), /packages @revt-eng\/core@1\.0\.0-rl\.7\.2\/\.\.\/\.\.\/\.\.\/@other-org\/pkg\/9\.9\.9 changes/);
+  // The same for a range, a tag or an alias in a key: the entry may stay as it is, and nothing is read from or done to it.
+  for (const version of ['^1.0.0', 'latest', '1.0', '1.0.0+build', 'npm:other@1.0.0', '1.0.0_patch']) {
+    const odd = (text) => text.replace("  '@revt-eng/core@1.0.0-rl.7.2':", `  '@revt-eng/core@${version}':`).replaceAll('sha512-core', 'sha512-Y29yZQ==');
+    assert.deepEqual(peerMetaToVerify(odd(peerBefore), odd(peerAfter())), [], version);
+  }
+});
+
+test('an edge of an added snapshot points at a pin, where the replaced one did, or for a new name in the registry\'s range', () => {
+  const sdkSnapshot = "  '@revt-eng/sdk@1.4.0(react@19.2.7)':\n    dependencies:\n      react: 19.2.7";
+  const zods = (text) => text.replace('  zod@4.0.0:\n    resolution: {integrity: sha512-zod}', '  zod@3.0.0:\n    resolution: {integrity: sha512-zod3}\n\n  zod@4.0.0:\n    resolution: {integrity: sha512-zod}').replace('  zod@4.0.0: {}', '  zod@3.0.0: {}\n\n  zod@4.0.0: {}');
+  const head = (edge) => zods(peerBefore).replace("(react@19.2.7)':\n    dependencies:\n      react: 19.2.7", `(react@19.2.7)':\n    dependencies:\n      react: 19.2.7${edge}`);
+  const next = (edge) => zods(peerAfter()).replace(sdkSnapshot, `${sdkSnapshot}${edge}`);
+  // The registry lists zod ^4.0.0 for the SDK. The head locks two versions of zod.
+  assert.equal(peerRefusal(head(''), next('\n      zod: 4.0.0')), null, 'a new edge, in range');
+  assert.match(peerRefusal(head(''), next('\n      zod: 3.0.0')), /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7\) depends on zod at 3\.0\.0, which is neither the branch's only snapshot of it nor in the registry's range "\^4\.0\.0"; pin it by hand/);
+  assert.equal(peerRefusal(head('\n      zod: 3.0.0'), next('\n      zod: 3.0.0')), null, 'where the replaced snapshot pointed (an override)');
+  assert.match(peerRefusal(head('\n      zod: 3.0.0'), next('\n      zod: 4.0.0')), /depends on zod at 4\.0\.0, not where the snapshot it replaces pointed; pin it by hand/, 'an edge the package had does not move, even into the range');
+  assert.match(peerRefusal(head('\n      zod: 4.0.0'), next('\n      zod: 3.0.0')), /depends on zod at 3\.0\.0, not where the snapshot it replaces pointed/);
+  // One version of zod at the head: a new edge can only mean that one (the range is not asked, as with an override).
+  assert.equal(peerRefusal(peerBefore, peerAfter().replace(sdkSnapshot, `${sdkSnapshot}\n      zod: 4.0.0`)), null);
+  // The peer suffix of the key is the snapshot's own peer edges.
+  const rekey = (suffix) => peerAfter().replace("'@revt-eng/sdk@1.4.0(react@19.2.7)':", `'@revt-eng/sdk@1.4.0${suffix}':`).replace('version: 1.4.0(react@19.2.7)', `version: 1.4.0${suffix}`);
+  assert.match(peerRefusal(peerBefore, rekey('(react@19.2.8)')), /snapshots @revt-eng\/sdk@1\.4\.0\(react@19\.2\.8\) has a peer suffix that does not match its peer react/);
+  assert.match(peerRefusal(peerBefore, rekey('')), /snapshots @revt-eng\/sdk@1\.4\.0 has a peer suffix that does not match its peer react/);
+  assert.match(peerRefusal(peerBefore, rekey('(react@19.2.7)(zod@4.0.0)')), /has a peer suffix that does not match its peer zod/);
+  assert.match(peerRefusal(peerBefore, rekey('(react@19.2.7')), /adds @revt-eng\/sdk@1\.4\.0\(react@19\.2\.7, which is not a pinned package at its pin|peer suffix/);
+
+  for (const [version, range, expected] of [
+    ['4.0.0', '^4.0.0', true], ['4.9.1', '^4.0.0', true], ['5.0.0', '^4.0.0', false], ['3.9.9', '^4.0.0', false], ['0.2.5', '^0.2.3', true], ['0.3.0', '^0.2.3', false], ['0.0.4', '^0.0.3', false],
+    ['1.2.9', '~1.2.3', true], ['1.3.0', '~1.2.3', false], ['19.2.7', '>=19', true], ['18.3.1', '>=19', false], ['19.2.7', '>=18 <20', true], ['20.0.0', '>=18 <20', false], ['19.2.7', '>= 18.0.0', true],
+    ['4.4.3', '4.4.3', true], ['4.4.4', '4.4.3', false], ['4.4.3', '=4.4.3', true], ['4.4.3', '4', true], ['4.4.3', '4.x', true], ['4.4.3', '4.3', false], ['4.4.3', '*', true], ['4.4.3', '', true],
+    ['2.0.0', '^1.0.0 || ^2.0.0', true], ['3.0.0', '^1.0.0 || ^2.0.0', false], ['1.5.0', '1.0.0 - 2.0.0', true], ['2.0.1', '1.0.0 - 2.0.0', false],
+    ['0.1.562-rl.1.5', '0.1.562-rl.1.5', true], ['0.1.562-rl.1.5', '^0.1.560', false], ['0.1.562-rl.1.5', '>=0.1.562-rl.1.4', true], ['5.0.0-beta.1', '^4.0.0', false], ['4.1.0-beta.1', '^4.0.0', false],
+    ['4.0.0', 'latest', false], ['4.0.0', 'npm:zod@^4.0.0', false], ['4.0.0', 'workspace:*', false], ['4.0.0', undefined, false], ['^4.0.0', '^4.0.0', false], ['4.0.0', '>4', false], ['4.0.0', '<=4', false],
+  ]) assert.equal(inRange(version, range), expected, `${version} in ${range}`);
+});
+
+test('an added packages entry carries what the registry lists for the version, where it lists it', () => {
+  const listed = { engines: { node: '>=22' }, cpu: ['x64'], bin: { sdk: 'cli.js' }, deprecated: 'use 2.x' };
+  const registry = new Map([...peerRegistry, ['@revt-eng/sdk', { '1.4.0': { ...peerRegistry.get('@revt-eng/sdk')?.['1.4.0'], ...listed } }]]);
+  const fields = ["    engines: {node: '>=22'}", '    cpu: [x64]', '    hasBin: true', '    deprecated: use 2.x'];
+  const entry = (lines) => swapIn(sdkResolution, [sdkResolution, ...lines].join('\n'));
+  const refusal = (text, against = registry) => pnpmLockRefusal('pnpm-lock.yaml', peerBefore, text, peerPins, against, coreManifest());
+  assert.equal(refusal(entry(fields)), null);
+  assert.match(refusal(entry(fields.slice(1))), /packages @revt-eng\/sdk@1\.4\.0 does not have the registry's engines/);
+  assert.match(refusal(entry(["    engines: {node: '>=18'}", ...fields.slice(1)])), /does not have the registry's engines/);
+  assert.match(refusal(entry(["    engines: {node: '>=22', npm: '>=9'}", ...fields.slice(1)])), /does not have the registry's engines/);
+  assert.match(refusal(entry([fields[0], ...fields.slice(2)])), /does not have the registry's cpu/);
+  assert.match(refusal(entry([fields[0], '    cpu: [x64, arm64]', ...fields.slice(2)])), /does not have the registry's cpu/);
+  assert.match(refusal(entry([...fields.slice(0, 2), fields[3]])), /does not have the registry's hasBin/);
+  assert.match(refusal(entry(fields.slice(0, 3))), /does not have the registry's deprecated/);
+  assert.match(refusal(entry([...fields.slice(0, 3), '    deprecated: fine'])), /does not have the registry's deprecated/);
+  // A field the registry does not list for the version is not compared (GitHub Packages leaves fields out of its metadata).
+  assert.equal(refusal(entry([...fields.slice(0, 2), '    os: [linux]', ...fields.slice(2)])), null);
+  assert.match(refusal(entry([...fields.slice(0, 2), '    os: [linux]', ...fields.slice(2)]), new Map([...registry, ['@revt-eng/sdk', { '1.4.0': { ...registry.get('@revt-eng/sdk')?.['1.4.0'], os: ['darwin'] } }]])), /does not have the registry's os/);
+});
+
+test('a pnpm-workspace.yaml changes only in the pinned packages\' minimumReleaseAgeExclude items', () => {
+  const pins = [{ name: '@revt-eng/core', version: '0.1.562-rl.1.5' }];
+  const head = ['packages:', '  - web-sdk', 'overrides:', '  esbuild: 0.28.1', 'minimumReleaseAgeExclude:', "  - '@revt-eng/core@0.1.559 || 0.1.560'", "  - '@revt-eng/schema@0.1.559 || 0.1.560'", '  - tsx@4.23.1', 'allowBuilds:', '  esbuild: true', ''].join('\n');
+  const check = (after, before = head) => workspaceRefusal('pnpm-workspace.yaml', before, after, pins);
+  const item = "  - '@revt-eng/core@0.1.559 || 0.1.560'";
+  // What pnpm 11 does: the pinned version joins the package's item, or the item (and the key) is new.
+  assert.equal(check(head.replace(item, "  - '@revt-eng/core@0.1.559 || 0.1.560 || 0.1.562-rl.1.5'")), null);
+  assert.equal(check(head.replace(item, "  - '@revt-eng/core@0.1.560 || 0.1.562-rl.1.5'")), null, 'an exclusion may go');
+  assert.equal(check(head.replace(item, "  - '@revt-eng/core@0.1.562-rl.1.5'"), head.replace(`${item}\n`, '')), null, 'a new item');
+  assert.match(check(head, head.replace(`${item}\n`, '')), /excludes @revt-eng\/core@0\.1\.559 from the release age/, 'a new item with other versions');
+  assert.equal(check('packages:\n  - a\n\nminimumReleaseAgeExclude:\n  - "@revt-eng/core@0.1.562-rl.1.5"\n', 'packages:\n  - a\n'), null, 'a new key');
+  assert.equal(check(head), null);
+  // A line that names the pinned package anywhere else: under overrides or allowBuilds, in a one-line mapping, as a new key.
+  const elsewhere = /changes more than the pinned packages' items under minimumReleaseAgeExclude/;
+  assert.match(check(head.replace('  esbuild: 0.28.1', "  esbuild: 0.28.1\n  '@revt-eng/core': npm:evil@9.9.9")), elsewhere);
+  assert.match(check(head.replace('  esbuild: true', "  esbuild: true\n  '@revt-eng/core': true")), elsewhere);
+  assert.match(check(`${head}patchedDependencies: {'@revt-eng/core': patches/x.patch}\n`), elsewhere);
+  assert.match(check(head.replace('overrides:', "overrides: {'@revt-eng/core': 'npm:evil@9.9.9'}\nfoo:")), elsewhere);
+  assert.match(check(head.replace('packages:', "'@revt-eng/core':\npackages:")), elsewhere);
+  assert.match(check(head.replace('  - tsx@4.23.1', '  - tsx@4.23.1\n  - evil@1.0.0')), elsewhere, 'another package excluded');
+  assert.match(check(head.replace("  - '@revt-eng/schema@0.1.559 || 0.1.560'", "  - '@revt-eng/schema@0.1.559 || 0.1.560 || 0.1.562-rl.1.5'")), elsewhere, 'a package that is not being pinned');
+  assert.match(check(head.replace('allowBuilds:', "allowBuilds:\n  - '@revt-eng/core@0.1.562-rl.1.5'")), elsewhere, 'an item outside the list');
+  // An item of the pinned package: only versions it had and the pinned one, in the one form.
+  assert.match(check(head.replace(item, "  - '@revt-eng/core@0.1.559 || 0.1.560 || 0.1.562-rl.1.5 || 9.9.9'")), /excludes @revt-eng\/core@9\.9\.9 from the release age/);
+  for (const odd of ["  - '@revt-eng/core@*'", "  - '@revt-eng/core@0.1.560 || >=1'", "  - '@revt-eng/core@0.1.560'\n  - '@revt-eng/core@0.1.562-rl.1.5'", "  - '@revt-eng/core@0.1.560 ||0.1.562-rl.1.5'"]) assert.match(check(head.replace(item, odd)), /is not '<name>@<version> \|\| <version> \.\.\.', once/, odd);
+  assert.match(check(head.replace(item, "  - '@revt-eng/core@0.1.560' # x")), elsewhere);
+});
+
+test('what the push job reads is bounded', async () => {
+  const entry = { key: '@revt-eng/core@1.0.0-rl.7.2', integrity: 'sha512-x', tarball: ghTarball('@revt-eng/core', '1.0.0-rl.7.2') };
+  const fetching = (impl) => impl;
+  const body = Buffer.alloc(4096);
+  // The download: a deadline, and a size limit by content-length, by what arrives and by what is read whole.
+  let signal;
+  await assert.rejects(readManifests([entry], { fetchImpl: fetching(async (url, init) => { signal = init.signal; throw new Error('aborted'); }) }), (error) => error instanceof RegistryUnavailable);
+  assert.ok(signal instanceof AbortSignal);
+  await assert.rejects(readManifests([entry], { fetchImpl: fetching(async () => { throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }); }), timeoutMs: 5 }),
+    (error) => error instanceof RegistryUnavailable && /could not read the tarball/.test(error.message));
+  const tooLarge = /the tarball of @revt-eng\/core@1\.0\.0-rl\.7\.2 was not read: it is larger than 1024 bytes/;
+  await assert.rejects(readManifests([entry], { maxBytes: 1024, fetchImpl: fetching(async () => ({ ok: true, headers: new Headers({ 'content-length': '4096' }), arrayBuffer: async () => { throw new Error('must not be read'); } })) }), tooLarge);
+  await assert.rejects(readManifests([entry], { maxBytes: 1024, fetchImpl: fetching(async () => ({ ok: true, arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.length) })) }), tooLarge);
+  let cancelled = false;
+  const stream = () => { let sent = 0; return { getReader: () => ({ read: async () => (sent++ < 8 ? { done: false, value: new Uint8Array(512) } : { done: true }), cancel: async () => { cancelled = true; } }) }; };
+  await assert.rejects(readManifests([entry], { maxBytes: 1024, fetchImpl: fetching(async () => ({ ok: true, headers: new Headers(), body: stream() })) }), tooLarge);
+  assert.equal(cancelled, true);
+  assert.equal(await readManifests([entry], { maxBytes: 8192, fetchImpl: fetching(async () => ({ ok: true, headers: new Headers(), body: stream() })) }).catch((error) => error.message), 'the tarball of @revt-eng/core@1.0.0-rl.7.2 does not have the integrity the lockfile records');
+  // The tarball: not gzip, and an entry renamed by a pax header, as tar reads it.
+  assert.throws(() => tarballManifest(Buffer.from('hello')), /not a gzip archive/);
+  assert.deepEqual(tarballManifest(tarball([['PaxHeader/package.json', '30 path=package/package.json\n', 'x'], ['package/p', '{"name":"renamed"}']])), { name: 'renamed' });
+
+  // git: output past the limit is its own error, never "the branch does not have the file".
+  const bundle = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'pin-bundle-')), tip = 'a'.repeat(40);
+  nodeFs.mkdirSync(nodePath.join(bundle, 'files'));
+  nodeFs.writeFileSync(nodePath.join(bundle, 'files', 'pnpm-lock.yaml'), peerAfter());
+  nodeFs.writeFileSync(nodePath.join(bundle, 'manifest.json'), JSON.stringify({ release: 'RL-7', base: tip, pins: peerPins, files: [{ path: 'pnpm-lock.yaml', deleted: false }] }));
+  const commit = (git) => () => commitPinBundle({ bundle, tip, pins: peerPins, release: 'RL-7', n: 7, git, registry: peerRegistry });
+  assert.throws(commit((args) => { if (args[0] === 'cat-file' && args[2].endsWith(':pnpm-lock.yaml')) throw gitOutputTooLarge(args); throw new Error('no such file'); }), /git cat-file blob a{40}:pnpm-lock\.yaml wrote more than \d+ bytes, more than this script reads/);
+  assert.throws(commit(() => { throw new Error('no such file'); }), /the bundle adds pnpm-lock\.yaml/);
 });
