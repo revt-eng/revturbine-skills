@@ -1,4 +1,4 @@
-// GENERATED from revt-eng/revturbine-devkit scripts/workflow-policy.mjs (v1.8.0). Do not edit here:
+// GENERATED from revt-eng/revturbine-devkit scripts/workflow-policy.mjs (v1.10.0). Do not edit here:
 // this repository's guard (scripts/ci-guards.mjs) enforces the workflow policy, so the
 // devkit keeps the master and `pnpm sync:copies` refreshes this copy (docs/ops/ci-levels.md).
 
