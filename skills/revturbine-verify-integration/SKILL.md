@@ -97,7 +97,7 @@ values — CTA action types, enforcement modes, trigger types — get it from
 
 Work the seams in this order — it is the order of consequence. Appendix
 sections 3–6 and 8 carry the detail for items 1–4; items 5 and 6 are
-self-contained. Report per group even when clean.
+self-contained; item 7 is the checklist in appendix 9. Report per group even when clean.
 
 1. **Money and wrong answers.** The production build actually runs in
    the intended runtime mode. **Local mode is production-capable** but uses
@@ -169,6 +169,9 @@ self-contained. Report per group even when clean.
    dismissible by keyboard, manage focus sanely, and stay readable at
    normal zoom and contrast. A paywall a user cannot escape is a
    blocking finding.
+7. **The complete connected lifecycle.** In connected mode with Stripe,
+   the user context stays accurate through every billing change. Run
+   appendix 9 against the codebase.
 
 Offline validation (`revturbine validate <file>`) checks the Playbook's
 shape, not its coherence, and nothing in the toolchain reads the app's
@@ -582,3 +585,61 @@ the limit stops being enforced. **Every trigger gate fails closed** —
 thresholds, trials, qualifiers and tiers all evaluate false on absent
 state, so the placement silently never fires. Neither errors, so a clean
 console proves nothing either way.
+
+## 9. The complete connected lifecycle
+
+A user context is only as good as its last update. The failure this
+catches: a user changes plan in the Stripe billing portal, the app's
+webhook ignores the event, and nothing shows the stale plan until
+something unrelated (a credit grant, say) does. Run the checklist against
+the codebase. For each item, show where it happens (file and line), fix it
+where it is missing (app code, so route the edit through
+`revturbine-integrate-sdk` and ask your human first), and report what you
+could not verify.
+
+1. **Identity: one id each, everywhere.**
+   - The SDK user `id` is the app's stable user id, taken from the
+     signed-in session, never from request input.
+   - `account_id` is set explicitly in every SDK context, browser and
+     server: the user id in a product without teams, otherwise the team
+     id. Never leave the SDK to report a `user-fallback:` key.
+   - The same two ids appear as `revturbine_user_id` and
+     `revturbine_account_id` in the Stripe metadata.
+2. **Checkout.** Every checkout or payment creation path sets
+   `client_reference_id`, the session `metadata`,
+   `subscription_data.metadata` for subscriptions and
+   `payment_intent_data.metadata` for one-time purchases. Every customer
+   creation path sets the customer metadata, and existing customers are
+   backfilled.
+3. **Plan.** The context's plan comes from the subscription's Stripe price
+   id, matched against the Playbook's `plan_variations[].stripe_price_id`.
+   A mapping by product key or name is only a fallback, for test mode and
+   unlisted prices. Monthly, annual and legacy prices all resolve. Free
+   users get the free plan explicitly.
+4. **Lifecycle events update the context.** Each of these must reach the
+   user context: mid-session in the browser through `setUserContext` (or a
+   fresh identify), and in server contexts on their next build. List where
+   each one happens in the code:
+   - first checkout;
+   - upgrade, downgrade or interval change, including through the Stripe
+     billing portal, where the subscription id stays the same;
+   - a scheduled change taking effect;
+   - renewal;
+   - payment failure, `past_due` and recovery;
+   - cancellation, at period end and immediately;
+   - trial start and end;
+   - one-time purchases and credit packs;
+   - refunds.
+
+   Flag any event the app's webhook ignores (for example
+   `customer.subscription.updated`) that would leave the context stale.
+5. **Server-side contexts** (workers, API routes) are built per request or
+   job from the owner's stored record, with the same user id, account id
+   and plan source as the browser.
+6. **Sign-out and a user switch replace the context.** No previous user's
+   facts carry over to the next.
+7. **Verify in Stripe test mode:** a checkout, a plan change, a
+   cancellation and a renewal. After each, confirm that the context's
+   `user_id`, `account_id` and `plan_handle` agree with the Stripe
+   objects' metadata. Test-mode price ids differ from live ones, so in
+   test mode the fallback mapping is what resolves the plan.

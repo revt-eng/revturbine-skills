@@ -348,6 +348,10 @@ add the SDK, not later:
   left **unlinked**, so keep them consistent. Plain `user_id` metadata is only
   a fallback stand-in for the account identity when none apply.
 
+Before launch, `revturbine-verify-integration` runs the complete connected
+lifecycle check (its appendix 9): identity, checkout, plan source, every
+billing event reaching the context, server contexts and sign-out.
+
 Ask the human before editing their Stripe code paths, and see
 [Link Stripe customers to accounts](https://revturbine.com/docs/guides/billing/#link-stripe-customers-to-accounts)
 for compiling examples.

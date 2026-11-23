@@ -150,6 +150,11 @@ exists to prevent.** If step 2 shows nothing, the fault is on
 RevTurbine's side of the event flow: do not patch around it in app
 code — report it (`revturbine-start-here` → If you get stuck).
 
+Then run the complete connected lifecycle check
+(`revturbine-verify-integration`, appendix 9): a plan change, a
+cancellation and a renewal must each reach the user context too, not only
+the first purchase.
+
 Live mode enters the conversation only after this passes, and going
 live is `revturbine-release-lifecycle`'s to prepare — never yours to
 flip.
