@@ -132,10 +132,13 @@ the next reload; in **hosted mode** edits flow `download` → edit → `validate
    that flow back: **`revturbine-connect-billing`**. (Checkout itself is
    the app's, wired in `revturbine-wire-monetization-surfaces`.) Payers only
    join cohort, retention and attribution figures once the app links each
-   Stripe customer to an account: `metadata.revturbine_account_id` /
-   `revturbine_user_id` on the customer, set in the app's own Stripe calls
-   (RevTurbine never writes to Stripe), with the same `account_id`
-   given to `identify`; conflicting evidence leaves a payer unlinked — see **Link Stripe customers to accounts** in
+   Stripe customer to an account: `metadata.revturbine_account_id` and
+   `revturbine_user_id` on the customer and on every Checkout Session
+   (`client_reference_id`, `metadata`, `subscription_data.metadata` or
+   `payment_intent_data.metadata`), set in the app's own Stripe calls
+   (RevTurbine never writes to Stripe), with the same `account_id` set
+   explicitly in every SDK user context, browser and server (the user id when
+   there are no teams); conflicting evidence leaves a payer unlinked — see **Link Stripe customers to accounts** in
    `revturbine-integrate-sdk`.
 4. **Verify and launch** — audit the integration end-to-end with
    **`revturbine-verify-integration`** *(also useful any time something

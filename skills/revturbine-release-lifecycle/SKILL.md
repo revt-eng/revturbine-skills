@@ -105,11 +105,17 @@ mode has a Playbook to serve before the app depends on it.
 5. **Link Stripe customers to accounts.** Before real payers arrive, confirm
    the app's own Stripe code sets `metadata.revturbine_account_id` and
    `metadata.revturbine_user_id` on every customer it creates or updates
-   (and creates the customer before Checkout, passing `customer`). RevTurbine
+   (and creates the customer before Checkout, passing `customer`), stamps
+   every Checkout Session with `client_reference_id`, `metadata` and
+   `subscription_data.metadata` or `payment_intent_data.metadata`, and has
+   backfilled both keys on existing customers. RevTurbine
    never writes to Stripe, so an unlinked payer stays unattributed: missing
    from cohort and retention figures. The `revturbine_*` keys are the primary
    path; a plain `user_id` in Customer metadata is only a fallback stand-in
-   for the account identity, not a RevTurbine user id. Pass the same `account_id` to `identify`. Evidence that
+   for the account identity, not a RevTurbine user id. Set the same `account_id`
+   explicitly in every SDK user context, browser and server (the user id when
+   there are no teams); a context without one reports `user-fallback:<user id>`,
+   which never joins the account Stripe names. Evidence that
    points to two different accounts leaves the payer unlinked, and there is no
    email match yet. See
    [Link Stripe customers to accounts](https://revturbine.com/docs/guides/billing/#link-stripe-customers-to-accounts).

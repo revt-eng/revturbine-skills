@@ -150,16 +150,30 @@ exists to prevent.** If step 2 shows nothing, the fault is on
 RevTurbine's side of the event flow: do not patch around it in app
 code — report it (`revturbine-start-here` → If you get stuck).
 
+Then run the complete connected lifecycle check
+(`revturbine-verify-integration`, appendix 9): a plan change, a
+cancellation and a renewal must each reach the user context too, not only
+the first purchase.
+
 Live mode enters the conversation only after this passes, and going
 live is `revturbine-release-lifecycle`'s to prepare — never yours to
 flip.
 
 ## What changes in the app
 
-One edit, routed through `revturbine-wire-monetization-surfaces` since
-it is app code: **the checkout stub becomes real** — the
+Two edits, both app code: **the checkout stub becomes real** — the
 `open_checkout_modal` resolver now opens the app's checkout carrying the
-mapped plan's real price.
+mapped plan's real price (`revturbine-wire-monetization-surfaces`) — and
+**every Stripe purchase names its RevTurbine user and account**
+(`revturbine-integrate-sdk` → Link Stripe customers to accounts). The app
+puts `revturbine_user_id` and `revturbine_account_id` on the Customer's
+`metadata`, and on each Checkout Session sets `client_reference_id` to the
+user id, `metadata` with both keys, and `subscription_data.metadata` or
+`payment_intent_data.metadata` with both keys. Without teams the account id
+is the user id. The same account id goes in every SDK user context as
+`account_id`, set explicitly. Existing customers need a one-off backfill of
+both keys, which your human runs. Without these, step 2 below can show the
+purchase under a provisional account instead of the buyer's.
 
 And one deletion: **any hand-written plan update after purchase is now
 scaffolding** — the plan follows billing, so remove the app's own
