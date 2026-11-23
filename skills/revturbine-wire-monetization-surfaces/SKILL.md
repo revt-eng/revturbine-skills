@@ -227,7 +227,11 @@ the app: a resolver keyed `open_checkout` **never fires**.
 
 Checkout needs somewhere to send the user. If the app already has its
 own checkout, wire **`open_checkout_modal`** to it now — the resolver
-receives the plan handle; the app maps it to its own price.
+receives the plan handle; the app maps it to its own price. When that
+checkout is Stripe's, it must also name the RevTurbine user and account on
+the session (`client_reference_id`, `metadata`, and
+`subscription_data.metadata` or `payment_intent_data.metadata`): see
+**Link Stripe customers to accounts** in `revturbine-integrate-sdk`.
 `revturbine-connect-billing` does not build checkout: it links
 RevTurbine to Stripe — prices mapped to plan variations, and Stripe's
 events flowing back into RevTurbine. Once billing is connected, a

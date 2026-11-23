@@ -129,7 +129,17 @@ self-contained. Report per group even when clean.
    Every revenue-critical action re-checked on the backend before
    value is granted, and a trial's paid cutoff anchored to server time
    rather than the client clock. The same user id space on client and
-   server. Server secrets absent from every client bundle.
+   server. Server secrets absent from every client bundle. One account id
+   everywhere: `account_id` set explicitly in every SDK user context,
+   browser and server (the user id when there are no teams), and the same
+   value as `revturbine_account_id` on Stripe. **A context without
+   `account_id` reports `user-fallback:<user id>`**, so activity and money
+   land under two accounts. If the app takes Stripe payments, every
+   Customer and every Checkout Session it creates carries
+   `revturbine_user_id` and `revturbine_account_id` (`metadata`, plus
+   `client_reference_id`, `subscription_data.metadata` or
+   `payment_intent_data.metadata` on the session), and existing customers
+   were backfilled — appendix 3, **Stripe identity**.
 2. **Content that never shows, or shows the wrong thing.** Entitlement
    handles, slot ids, surface templates, and CTA action types, each in
    both directions — a name in the code that the Playbook lacks, and a
@@ -355,6 +365,19 @@ Local decisions and local caps still work; hosted analytics is separate.
 The optional anonymous install beacon is not hosted clickstream reporting.
 `getPolicy().runtimeMode` reports what the running instance believes. Check
 the production code path and the intended refresh strategy, not just local dev.
+
+**Stripe identity.** Search the app for `customers.create`,
+`customers.update` and `checkout.sessions.create`. Each must carry both
+`revturbine_user_id` (the SDK's `user.id`) and `revturbine_account_id` (the
+SDK's `account_id`): the Customer in `metadata`; the session in
+`client_reference_id` (the user id) and `metadata`, plus
+`subscription_data.metadata` in subscription mode or
+`payment_intent_data.metadata` in payment mode. A session missing
+`subscription_data.metadata` leaves every renewal invoice to resolve through
+the Customer alone. Ask whether existing customers were backfilled. RevTurbine
+never writes to Stripe, so a missing key is an app-code finding for
+`revturbine-integrate-sdk`. In test mode, buy once and confirm the purchase
+appears under the same account the SDK reports, not a provisional one.
 
 **Trial cutoffs.** A trial's countdown and milestone nudges are derived
 locally and that is fine. The moment paid access **ends** must be

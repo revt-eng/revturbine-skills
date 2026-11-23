@@ -305,9 +305,19 @@ linked to one of the app's accounts. RevTurbine never writes to Stripe, so
 the link is code in the **app's own** Stripe calls, and you add it when you
 add the SDK, not later:
 
-- Pass the same `account_id` through the SDK that you put in the Stripe
-  metadata: `sdk.identify(user.id, { account_id: user.accountId })` (or
-  `account_id` in `options.user`). Never use an email as the id. Do not
+- **One account id everywhere.** Pass the same `account_id` through the SDK
+  that you put in the Stripe metadata: `sdk.identify(user.id, { account_id:
+  user.accountId })` (or `account_id` in `options.user`, or
+  `setUserContext()`), and `account_id` in every server-side `user_context`
+  too (Node, Python, Rust). Set it explicitly even when it equals the user id:
+  a context without `account_id` reports `user-fallback:<user id>`, which is
+  deliberately not a real account, so the user's activity and the Stripe money
+  land under two different accounts. In a product without teams, each user is
+  their own account and the account id **is** the user id; with teams, it's
+  the team's id. Build the context from the signed-in session (on servers, per
+  request or job from the owner's stored record), never from request input,
+  and call `setUserContext()` when billing state changes mid-session. Never
+  use an email as the id. Do not
   promise an email match: no SDK call, and no `RevTurbineServer` method, writes
   a user's email to RevTurbine yet, so there is nothing to match on.
 - Wherever the app calls `stripe.customers.create` or `customers.update`, put
@@ -317,8 +327,21 @@ add the SDK, not later:
   it) is only a fallback stand-in for the account identity when nothing else
   applies, and is **not** a RevTurbine user id. Checkout cannot set
   Customer metadata inline, so create the customer first and pass `customer`
-  to `checkout.sessions.create`, repeating the keys in `metadata` and
-  `subscription_data.metadata`.
+  to `checkout.sessions.create`.
+- **Stamp every checkout.** On each `checkout.sessions.create`, set
+  `client_reference_id: <the user.id>` and `metadata` with both keys, plus
+  `subscription_data: { metadata }` with both keys for a subscription (Stripe
+  copies it onto every renewal, failed and recovered invoice) and
+  `payment_intent_data: { metadata }` with both keys for a one-time payment
+  such as a credit pack. Then every event of the purchase names its user and
+  account without depending on a link RevTurbine has to find.
+- **Backfill existing customers.** Customers who won't check out again need a
+  one-off `customers.update` setting both keys; subscriptions created before
+  the change resolve only through their customer. Write the script, show it to
+  the human, and let them run it.
+- A `revturbine_user_id` alone finds an account only when RevTurbine already
+  knows that user's account; otherwise the payer is held in a provisional
+  account. Set both keys.
 - RevTurbine collects three pieces of evidence for a payer: Customer metadata,
   an existing customer link, and a Checkout-created customer. If they agree
   the payer is linked; if they point to two different accounts the payer is

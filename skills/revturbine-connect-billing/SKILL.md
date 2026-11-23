@@ -156,10 +156,19 @@ flip.
 
 ## What changes in the app
 
-One edit, routed through `revturbine-wire-monetization-surfaces` since
-it is app code: **the checkout stub becomes real** — the
+Two edits, both app code: **the checkout stub becomes real** — the
 `open_checkout_modal` resolver now opens the app's checkout carrying the
-mapped plan's real price.
+mapped plan's real price (`revturbine-wire-monetization-surfaces`) — and
+**every Stripe purchase names its RevTurbine user and account**
+(`revturbine-integrate-sdk` → Link Stripe customers to accounts). The app
+puts `revturbine_user_id` and `revturbine_account_id` on the Customer's
+`metadata`, and on each Checkout Session sets `client_reference_id` to the
+user id, `metadata` with both keys, and `subscription_data.metadata` or
+`payment_intent_data.metadata` with both keys. Without teams the account id
+is the user id. The same account id goes in every SDK user context as
+`account_id`, set explicitly. Existing customers need a one-off backfill of
+both keys, which your human runs. Without these, step 2 below can show the
+purchase under a provisional account instead of the buyer's.
 
 And one deletion: **any hand-written plan update after purchase is now
 scaffolding** — the plan follows billing, so remove the app's own
