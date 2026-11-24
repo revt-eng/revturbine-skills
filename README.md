@@ -28,8 +28,14 @@ npx skills add revt-eng/revturbine-skills --skill revturbine-integrate-sdk
 | **`revturbine-monetization-best-practices`** | Packaging and pricing judgement for a first setup — what to gate, the ladder, the numbers, pacing | nothing (advisory) |
 | **`revturbine-wire-monetization-surfaces`** | Wire slots and gates so authored placements render in the app | app code |
 | **`revturbine-verify-integration`** | End-to-end audit when config looks right but the app behaves wrong | nothing (report) |
+| **`revturbine-audit-integration`** | Review of a built integration: anti-patterns in the code and Playbook, and how each offer screen looks (ships its own `references/`) | nothing (report) |
 | **`revturbine-connect-billing`** | Connect Stripe so prices are real and purchases update the plan | billing mapping (human-confirmed) |
 | **`revturbine-release-lifecycle`** | Connect the tenant, stage, preview, and launch to real users | live config (human-confirmed) |
+
+`revturbine-verify-integration` asks whether the names agree and the
+decisions come out right. `revturbine-audit-integration` asks whether the
+integration is built the intended way and whether its screens are good;
+run it when an integration is reported finished.
 
 This catalog supersedes the original six-skill seed set (retired 2026-08-19).
 The ecosystem tool re-fetches on `skills update`.
