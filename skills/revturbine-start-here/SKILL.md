@@ -13,7 +13,7 @@ description: >
 license: MIT
 metadata:
   author: revturbine
-  version: "0.43.0"
+  version: "0.44.0"
   safety_class: read-only-inspection
   schema_version: ">=0.1.0 <0.2.0"
   tier: free
@@ -141,6 +141,11 @@ the next reload; in **hosted mode** edits flow `download` → edit → `validate
    **`revturbine-verify-integration`** *(also useful any time something
    misbehaves)*, then launch through **`revturbine-release-lifecycle`** — the
    human's call.
+5. **Review a finished integration** — when an agent or a developer says
+   the integration is done, and before a demo or a first launch:
+   **`revturbine-audit-integration`**. It looks for app code that rebuilds
+   what the SDK provides, and it looks at every offer screen for every
+   plan. Read-only.
 
 **Verification is how each job ends, not a job your human elects.** Every
 skill above closes by proving its own change on the running app, and that

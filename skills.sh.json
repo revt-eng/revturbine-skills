@@ -15,7 +15,8 @@
       "skills": [
         "revturbine-integrate-sdk",
         "revturbine-wire-monetization-surfaces",
-        "revturbine-verify-integration"
+        "revturbine-verify-integration",
+        "revturbine-audit-integration"
       ]
     },
     {
