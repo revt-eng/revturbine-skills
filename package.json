@@ -14,7 +14,7 @@
     "ci:l1": "node scripts/check-line-endings.mjs --all && node scripts/ci-guards.mjs && npm test && npm run check"
   },
   "devDependencies": {
-    "@revturbine/cli": "0.19.1",
+    "@revturbine/cli": "0.21.24-rl.4.13",
     "@revturbine/sdk": "0.9.2",
     "semver": "7.7.3",
     "yaml": "2.9.0"
