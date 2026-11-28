@@ -56,8 +56,8 @@ export function parseHelpCommands(help) {
 
 export function loadCliContract() {
   const versionOutput = cli(['--version']).trim();
-  const match = versionOutput.match(/^(\d+\.\d+\.\d+) \(schema (\d+\.\d+\.\d+)\)$/);
-  if (!match) throw new Error(`Unable to parse CLI version contract: ${versionOutput}`);
+  const match = versionOutput.match(/^(\S+) \(schema (\d+\.\d+\.\d+)\)$/);
+  if (!match || !semver.valid(match[1])) throw new Error(`Unable to parse CLI version contract: ${versionOutput}`);
   const roots = parseHelpCommands(cli(['--help']));
   const paths = new Set(roots);
   for (const command of roots) {
